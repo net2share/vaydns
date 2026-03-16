@@ -64,24 +64,47 @@ import (
 // smux streams will be closed after this much time without receiving data.
 const idleTimeout = 2 * time.Minute
 
-// dnsNameCapacity returns the number of bytes remaining for encoded data after
-// including domain in a DNS name.
-func dnsNameCapacity(domain dns.Name) int {
-	// Names must be 255 octets or shorter in total length.
-	// https://tools.ietf.org/html/rfc1035#section-2.3.4
-	capacity := 255
-	// Subtract the length of the null terminator.
-	capacity -= 1
-	for _, label := range domain {
-		// Subtract the length of the label and the length octet.
-		capacity -= len(label) + 1
+// dnsNameCapacity returns the number of raw bytes that can be encoded in a DNS
+// query name, given the domain suffix and encoding constraints.
+//
+// maxQnameLen is the maximum total QNAME length in wire format (0 = 253 per RFC 1035).
+// maxNumLabels is the maximum number of data labels (0 = unlimited).
+// Labels are always chunked at 63 bytes (DNS maximum label size).
+func dnsNameCapacity(domain dns.Name, maxQnameLen int, maxNumLabels int) int {
+	const labelLen = 63 // DNS maximum label size
+
+	// Default to RFC 1035 maximum if not specified.
+	if maxQnameLen <= 0 || maxQnameLen > 253 {
+		maxQnameLen = 253
 	}
-	// Each label may be up to 63 bytes long and requires 64 bytes to
-	// encode.
-	capacity = capacity * 63 / 64
-	// Base32 expands every 5 bytes to 8.
-	capacity = capacity * 5 / 8
-	return capacity
+
+	// Calculate domain wire length (each label: 1 length byte + content).
+	domainWireLen := 0
+	for _, label := range domain {
+		domainWireLen += 1 + len(label)
+	}
+
+	// Available wire bytes for data labels.
+	availableWireBytes := maxQnameLen - domainWireLen
+	if availableWireBytes <= 0 {
+		return 0
+	}
+
+	// Each label requires len+1 bytes to encode (1 length byte + content).
+	// So for N labels of max length L, we use N*(L+1) wire bytes to carry N*L encoded chars.
+	encodedCapacity := availableWireBytes * labelLen / (labelLen + 1)
+
+	// If maxNumLabels is limited, cap the encoded capacity.
+	if maxNumLabels > 0 {
+		maxEncoded := maxNumLabels * labelLen
+		if encodedCapacity > maxEncoded {
+			encodedCapacity = maxEncoded
+		}
+	}
+
+	// Base32 expands every 5 bytes to 8 chars.
+	rawCapacity := encodedCapacity * 5 / 8
+	return rawCapacity
 }
 
 // readKeyFromFile reads a key from a named file.
@@ -162,7 +185,7 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 	return err
 }
 
-func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn) error {
+func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn, maxQnameLen int, maxNumLabels int) error {
 	defer pconn.Close()
 
 	ln, err := net.ListenTCP("tcp", localAddr)
@@ -173,10 +196,23 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 
 	const clientIDSize = 2
 	const dataLenSize = 1
-	mtu := dnsNameCapacity(domain) - clientIDSize - dataLenSize
+	mtu := dnsNameCapacity(domain, maxQnameLen, maxNumLabels) - clientIDSize - dataLenSize
+	// KCP has a fixed 24-byte header per packet (conv + cmd + frg + wnd +
+	// ts + sn + una + len). On top of that, Noise and smux add their own
+	// framing. Below 50 bytes the usable payload per query is so small
+	// that the tunnel becomes impractically slow.
 	const kcpMinMTU = 50
 	if mtu < kcpMinMTU {
-		return fmt.Errorf("domain %s leaves only %d bytes for payload (minimum %d)", domain, mtu, kcpMinMTU)
+		domainWireLen := 0
+		for _, label := range domain {
+			domainWireLen += 1 + len(label)
+		}
+		effectiveQname := maxQnameLen
+		if effectiveQname <= 0 || effectiveQname > 253 {
+			effectiveQname = 253
+		}
+		return fmt.Errorf("payload too small: %d bytes (need %d) — domain %s uses %d/%d QNAME bytes, max-qname-len=%d, max-num-labels=%d; try increasing -max-qname-len, -max-num-labels, or use a shorter domain",
+			mtu, kcpMinMTU, domain, domainWireLen, effectiveQname, maxQnameLen, maxNumLabels)
 	}
 	log.Infof("effective MTU %d", mtu)
 
@@ -249,6 +285,8 @@ func main() {
 	var pubkeyString string
 	var udpAddr string
 	var utlsDistribution string
+	var maxQnameLen int
+	var maxNumLabels int
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -292,6 +330,8 @@ Known TLS fingerprints for -utls are:
 		"choose TLS fingerprint from weighted distribution")
 	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
 	flag.StringVar(&listenAddr, "listen", "", "TCP address to listen on for local connections (e.g., 127.0.0.1:7000)")
+	flag.IntVar(&maxQnameLen, "max-qname-len", 101, "maximum total QNAME length in wire format (0 = 253 per RFC 1035)")
+	flag.IntVar(&maxNumLabels, "max-num-labels", 0, "maximum number of data labels in query name (0 = unlimited)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -433,8 +473,8 @@ Known TLS fingerprints for -utls are:
 		os.Exit(1)
 	}
 
-	pconn = NewDNSPacketConn(pconn, remoteAddr, domain)
-	err = run(pubkey, domain, localAddr, remoteAddr, pconn)
+	pconn = NewDNSPacketConn(pconn, remoteAddr, domain, maxQnameLen, maxNumLabels)
+	err = run(pubkey, domain, localAddr, remoteAddr, pconn, maxQnameLen, maxNumLabels)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}

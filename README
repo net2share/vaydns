@@ -397,3 +397,35 @@ response. For the server, there may be more space available in some
 responses and less in others (depending on the size of the corresponding
 query); the logged value is the minimum that is guaranteed to be
 supported in any response.
+
+
+## QNAME constraints (client)
+
+Some DNS resolvers or firewalls reject queries with long QNAMEs or too
+many labels. The client has two options to control the shape of query
+names:
+
+  `-max-qname-len N`   Maximum total QNAME length in wire format.
+                        Default: 101. Set to 0 for the RFC 1035
+                        maximum of 253.
+
+  `-max-num-labels N`   Maximum number of data labels (the labels
+                        before the tunnel domain). Default: 0
+                        (unlimited). Setting this to 1 produces a
+                        single data label per query, which looks
+                        more like normal DNS traffic.
+
+These options reduce the amount of upstream data per query, lowering
+throughput but improving compatibility with restrictive resolvers.
+The effective MTU logged at startup reflects these constraints.
+
+The client requires a minimum MTU of 50 bytes after accounting for the
+domain length and encoding overhead. KCP (the underlying transport) has
+a fixed 24-byte header per packet, and Noise encryption and smux add
+additional framing, so below 50 bytes the usable payload is too small
+for a functional tunnel. If your combination of domain length and
+constraint flags results in less than 50 bytes, the client will exit
+with an error suggesting what to adjust.
+```
+$ ./dnstt-client -max-qname-len 150 -max-num-labels 2 -doh https://doh.example/dns-query -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
+```

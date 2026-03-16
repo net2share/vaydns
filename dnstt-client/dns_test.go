@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"io"
 	"testing"
+
+	"www.bamsoftware.com/git/dnstt.git/dns"
 )
 
 func allPackets(buf []byte) ([][]byte, error) {
@@ -48,5 +50,56 @@ func TestNextPacket(t *testing.T) {
 			t.Errorf("%x\nreturned %x %v\nexpected %x %v",
 				test.input, packets, err, test.packets, test.err)
 		}
+	}
+}
+
+// computeQueryNameLen calculates the total length of a DNS query name
+// given encoded data length and domain labels.
+func computeQueryNameLen(encodedLen int, domain dns.Name) int {
+	const labelLen = 63
+	numLabels := (encodedLen + labelLen - 1) / labelLen
+	if numLabels == 0 {
+		numLabels = 1
+	}
+	queryNameLen := encodedLen + (numLabels - 1) // encoded data + separator dots
+	for _, label := range domain {
+		queryNameLen += 1 + len(label)
+	}
+	return queryNameLen
+}
+
+func TestLabelConstraints(t *testing.T) {
+	const labelLen = 63
+	testCases := []struct {
+		maxQnameLen  int
+		maxNumLabels int
+		domainStr    string
+	}{
+		{0, 1, "d.example.org"},
+		{0, 0, "t.example.com"},
+		{200, 2, "short.io"},
+	}
+
+	for _, tc := range testCases {
+		domain, err := dns.ParseName(tc.domainStr)
+		if err != nil {
+			t.Fatalf("failed to parse domain %q: %v", tc.domainStr, err)
+		}
+
+		maxEncoded := labelLen * 4
+		if tc.maxNumLabels > 0 {
+			maxEncoded = tc.maxNumLabels * labelLen
+		}
+
+		queryNameLen := computeQueryNameLen(maxEncoded, domain)
+
+		actualLabels := (maxEncoded + labelLen - 1) / labelLen
+		if tc.maxNumLabels > 0 && actualLabels > tc.maxNumLabels {
+			t.Errorf("maxQnameLen=%d maxNumLabels=%d: produced %d labels, expected max %d",
+				tc.maxQnameLen, tc.maxNumLabels, actualLabels, tc.maxNumLabels)
+		}
+
+		t.Logf("maxQnameLen=%d maxNumLabels=%d domain=%s: maxEncoded=%d queryNameLen=%d",
+			tc.maxQnameLen, tc.maxNumLabels, tc.domainStr, maxEncoded, queryNameLen)
 	}
 }

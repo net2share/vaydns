@@ -62,6 +62,10 @@ type DNSPacketConn struct {
 	// Sending on pollChan permits sendLoop to send an empty polling query.
 	// sendLoop also does its own polling according to a time schedule.
 	pollChan chan struct{}
+	// maxQnameLen is the maximum total QNAME length in wire format (0 = 253 per RFC).
+	maxQnameLen int
+	// maxNumLabels is the maximum number of data labels (0 = unlimited).
+	maxNumLabels int
 	// Forged response tracking
 	forgedCount     uint64
 	countSERVFAIL   uint64
@@ -80,13 +84,20 @@ type DNSPacketConn struct {
 // and ReadFrom methods, handles the actual sending and receiving the DNS
 // messages encoded by DNSPacketConn. addr is the address to be passed to
 // transport.WriteTo whenever a message needs to be sent.
-func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name) *DNSPacketConn {
+// maxQnameLen is the max total QNAME length (0 = 253 per RFC 1035).
+// maxNumLabels is the max number of data labels (0 = unlimited).
+func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, maxQnameLen int, maxNumLabels int) *DNSPacketConn {
+	if maxQnameLen <= 0 || maxQnameLen > 253 {
+		maxQnameLen = 253
+	}
 	// Generate a new random ClientID.
 	clientID := turbotunnel.NewClientID()
 	c := &DNSPacketConn{
 		clientID:        clientID,
 		domain:          domain,
 		pollChan:        make(chan struct{}, pollLimit),
+		maxQnameLen:     maxQnameLen,
+		maxNumLabels:    maxNumLabels,
 		transportErr:    make(chan error, 2),
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),
 	}
@@ -272,12 +283,44 @@ func chunks(p []byte, n int) [][]byte {
 //   - Poll query:  [ClientID:2][Nonce:4]  (4 random bytes for cache busting)
 //
 // The encoded bytes are base32-encoded, split into 63-byte labels, and
-// appended with the tunnel domain to form the DNS query name.
+// appended with the tunnel domain to form the DNS query name. Label count
+// and total QNAME length are constrained by maxQnameLen and maxNumLabels.
 func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) error {
+	const labelLen = 63 // DNS maximum label size
+
+	domain := c.domain
+
+	// Calculate domain wire length (each label: 1 length byte + content).
+	domainWireLen := 0
+	for _, label := range domain {
+		domainWireLen += 1 + len(label)
+	}
+
+	// Calculate available wire bytes for data labels.
+	maxQnameLen := c.maxQnameLen
+	if maxQnameLen <= 0 || maxQnameLen > 253 {
+		maxQnameLen = 253
+	}
+	availableWireBytes := maxQnameLen - domainWireLen
+	if availableWireBytes <= 0 {
+		return fmt.Errorf("domain %s is too long for max-qname-len %d", domain.String(), c.maxQnameLen)
+	}
+
+	// Calculate encoded capacity from wire bytes.
+	encodedCapacity := availableWireBytes * labelLen / (labelLen + 1)
+
+	// If maxNumLabels is limited, also cap the encoded capacity.
+	if c.maxNumLabels > 0 {
+		maxEncoded := c.maxNumLabels * labelLen
+		if encodedCapacity > maxEncoded {
+			encodedCapacity = maxEncoded
+		}
+	}
+
 	var decoded []byte
 	{
 		var buf bytes.Buffer
-		// ClientID
+		// ClientID (2 bytes)
 		buf.Write(c.clientID[:])
 		if len(p) > 0 {
 			// Data packet: length prefix + data
@@ -288,12 +331,7 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 			buf.Write(p)
 		} else {
 			// Poll: random nonce for cache busting
-			nonce := make([]byte, pollNonceLen)
-			_, err := rand.Read(nonce)
-			if err != nil {
-				return err
-			}
-			buf.Write(nonce)
+			io.CopyN(&buf, rand.Reader, pollNonceLen)
 		}
 		decoded = buf.Bytes()
 	}
@@ -301,8 +339,12 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 	encoded := make([]byte, base32Encoding.EncodedLen(len(decoded)))
 	base32Encoding.Encode(encoded, decoded)
 	encoded = bytes.ToLower(encoded)
-	labels := chunks(encoded, 63)
-	labels = append(labels, c.domain...)
+	// Truncate encoded data to fit within constraints.
+	if len(encoded) > encodedCapacity {
+		encoded = encoded[:encodedCapacity]
+	}
+	labels := chunks(encoded, labelLen)
+	labels = append(labels, domain...)
 	name, err := dns.NewName(labels)
 	if err != nil {
 		return err
