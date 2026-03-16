@@ -4,8 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"net/http"
 	"strconv"
 	"sync"
@@ -95,7 +94,7 @@ func (c *HTTPPacketConn) send(p []byte) error {
 		if ct := resp.Header.Get("Content-Type"); ct != "application/dns-message" {
 			return fmt.Errorf("unknown HTTP response Content-Type %+q", ct)
 		}
-		body, err := ioutil.ReadAll(io.LimitReader(resp.Body, 64000))
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 64000))
 		if err == nil {
 			c.QueuePacketConn.QueueIncoming(body, turbotunnel.DummyAddr{})
 		}
@@ -112,7 +111,7 @@ func (c *HTTPPacketConn) send(p []byte) error {
 			var err error
 			retryAfter, err = parseRetryAfter(value, now)
 			if err != nil {
-				log.Printf("cannot parse Retry-After value %+q", value)
+				log.Warnf("cannot parse Retry-After value %+q", value)
 			}
 		}
 		if retryAfter.IsZero() {
@@ -120,15 +119,15 @@ func (c *HTTPPacketConn) send(p []byte) error {
 			retryAfter = now.Add(defaultRetryAfter)
 		}
 		if retryAfter.Before(now) {
-			log.Printf("got %+q, but Retry-After is %v in the past",
+			log.Warnf("got %+q, but Retry-After is %v in the past",
 				resp.Status, now.Sub(retryAfter))
 		} else {
 			c.notBeforeLock.Lock()
 			if retryAfter.Before(c.notBefore) {
-				log.Printf("got %+q, but Retry-After is %v earlier than already received Retry-After",
+				log.Warnf("got %+q, but Retry-After is %v earlier than already received Retry-After",
 					resp.Status, c.notBefore.Sub(retryAfter))
 			} else {
-				log.Printf("got %+q; ceasing sending for %v",
+				log.Warnf("got %+q; ceasing sending for %v",
 					resp.Status, retryAfter.Sub(now))
 				c.notBefore = retryAfter
 			}
@@ -155,7 +154,7 @@ func (c *HTTPPacketConn) sendLoop() {
 
 		err := c.send(p)
 		if err != nil {
-			log.Printf("sendLoop: %v", err)
+			log.Errorf("sendLoop: %v", err)
 		}
 	}
 }

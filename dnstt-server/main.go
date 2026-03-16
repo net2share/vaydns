@@ -56,8 +56,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"net"
 	"os"
 	"sync"
@@ -225,7 +224,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 			err = nil
 		}
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Printf("stream %08x:%d copy stream←upstream: %v", conv, stream.ID(), err)
+			log.Warnf("stream %08x:%d copy stream←upstream: %v", conv, stream.ID(), err)
 		}
 		upstreamTCPConn.CloseRead()
 		stream.Close()
@@ -238,7 +237,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 			err = nil
 		}
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Printf("stream %08x:%d copy upstream←stream: %v", conv, stream.ID(), err)
+			log.Warnf("stream %08x:%d copy upstream←stream: %v", conv, stream.ID(), err)
 		}
 		upstreamTCPConn.CloseWrite()
 	}()
@@ -275,15 +274,15 @@ func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string) error 
 			}
 			return err
 		}
-		log.Printf("begin stream %08x:%d", conn.GetConv(), stream.ID())
+		log.Infof("begin stream %08x:%d", conn.GetConv(), stream.ID())
 		go func() {
 			defer func() {
-				log.Printf("end stream %08x:%d", conn.GetConv(), stream.ID())
+				log.Debugf("end stream %08x:%d", conn.GetConv(), stream.ID())
 				stream.Close()
 			}()
 			err := handleStream(stream, upstream, conn.GetConv())
 			if err != nil {
-				log.Printf("stream %08x:%d handleStream: %v", conn.GetConv(), stream.ID(), err)
+				log.Warnf("stream %08x:%d handleStream: %v", conn.GetConv(), stream.ID(), err)
 			}
 		}()
 	}
@@ -300,7 +299,7 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string) 
 			}
 			return err
 		}
-		log.Printf("begin session %08x", conn.GetConv())
+		log.Infof("begin session %08x", conn.GetConv())
 		// Permit coalescing the payloads of consecutive sends.
 		conn.SetStreamMode(true)
 		// Disable the dynamic congestion window (limit only by the
@@ -317,12 +316,12 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string) 
 		}
 		go func() {
 			defer func() {
-				log.Printf("end session %08x", conn.GetConv())
+				log.Debugf("end session %08x", conn.GetConv())
 				conn.Close()
 			}()
 			err := acceptStreams(conn, privkey, upstream)
 			if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-				log.Printf("session %08x acceptStreams: %v", conn.GetConv(), err)
+				log.Warnf("session %08x acceptStreams: %v", conn.GetConv(), err)
 			}
 		}()
 	}
@@ -353,7 +352,7 @@ func nextPacket(r *bytes.Reader) ([]byte, error) {
 		}
 		if prefix >= 224 {
 			paddingLen := prefix - 224
-			_, err := io.CopyN(ioutil.Discard, r, int64(paddingLen))
+			_, err := io.CopyN(io.Discard, r, int64(paddingLen))
 			if err != nil {
 				return nil, eof(err)
 			}
@@ -399,7 +398,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 			// "If a query message with more than one OPT RR is
 			// received, a FORMERR (RCODE=1) MUST be returned."
 			resp.Flags |= dns.RcodeFormatError
-			log.Printf("FORMERR: more than one OPT RR")
+			log.Debugf("FORMERR: more than one OPT RR")
 			return resp, nil
 		}
 		resp.Additional = append(resp.Additional, dns.RR{
@@ -419,7 +418,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 			// RCODE=BADVERS."
 			resp.Flags |= dns.ExtendedRcodeBadVers & 0xf
 			additional.TTL = (dns.ExtendedRcodeBadVers >> 4) << 24
-			log.Printf("BADVERS: EDNS version %d != 0", version)
+			log.Debugf("BADVERS: EDNS version %d != 0", version)
 			return resp, nil
 		}
 
@@ -436,7 +435,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 	// There must be exactly one question.
 	if len(query.Question) != 1 {
 		resp.Flags |= dns.RcodeFormatError
-		log.Printf("FORMERR: too few or too many questions (%d)", len(query.Question))
+		log.Debugf("FORMERR: too few or too many questions (%d)", len(query.Question))
 		return resp, nil
 	}
 	question := query.Question[0]
@@ -448,7 +447,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 	if !ok {
 		// Not a name we are authoritative for.
 		resp.Flags |= dns.RcodeNameError
-		log.Printf("NXDOMAIN: not authoritative for %s", question.Name)
+		log.Debugf("NXDOMAIN: not authoritative for %s", question.Name)
 		return resp, nil
 	}
 	resp.Flags |= 0x0400 // AA = 1
@@ -456,7 +455,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 	if query.Opcode() != 0 {
 		// We don't support OPCODE != QUERY.
 		resp.Flags |= dns.RcodeNotImplemented
-		log.Printf("NOTIMPL: unrecognized OPCODE %d", query.Opcode())
+		log.Debugf("NOTIMPL: unrecognized OPCODE %d", query.Opcode())
 		return resp, nil
 	}
 
@@ -477,7 +476,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 	if err != nil {
 		// Base32 error, make like the name doesn't exist.
 		resp.Flags |= dns.RcodeNameError
-		log.Printf("NXDOMAIN: base32 decoding: %v", err)
+		log.Debugf("NXDOMAIN: base32 decoding: %v", err)
 		return resp, nil
 	}
 	payload = payload[:n]
@@ -490,7 +489,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 	// FORMERR MUST be returned."
 	if payloadSize < maxUDPPayload {
 		resp.Flags |= dns.RcodeFormatError
-		log.Printf("FORMERR: requester payload size %d is too small (minimum %d)", payloadSize, maxUDPPayload)
+		log.Debugf("FORMERR: requester payload size %d is too small (minimum %d)", payloadSize, maxUDPPayload)
 		return resp, nil
 	}
 
@@ -547,7 +546,7 @@ type FallbackManager struct {
 
 // NewFallbackManager creates a new manager for forwarding non-DNS packets.
 func NewFallbackManager(mainConn net.PacketConn, fallbackAddr net.Addr) *FallbackManager {
-	log.Printf("non-DNS packets will be forwarded to %s", fallbackAddr)
+	log.Infof("non-DNS packets will be forwarded to %s", fallbackAddr)
 
 	cache := ttlcache.New(ttlcache.WithTTL[UDPAddrKey, net.PacketConn](fallbackIdleTimeout))
 	cache.OnEviction(func(ctx context.Context, reason ttlcache.EvictionReason, i *ttlcache.Item[UDPAddrKey, net.PacketConn]) {
@@ -580,7 +579,7 @@ func (m *FallbackManager) HandlePacket(packet []byte, clientAddr net.Addr) {
 		// Session doesn't exist, create a new one.
 		newConn, err := net.ListenPacket("udp", ":0")
 		if err != nil {
-			log.Printf("failed to create fallback socket for %s: %v", clientKey, err)
+			log.Errorf("failed to create fallback socket for %v: %v", clientKey, err)
 			return
 		}
 		proxyConn = newConn // Use the new connection
@@ -588,7 +587,7 @@ func (m *FallbackManager) HandlePacket(packet []byte, clientAddr net.Addr) {
 		// Add the new session to the cache.
 		// The TTL is set to the default defined in the cache constructor.
 		m.sessions.Set(clientKey, newConn, ttlcache.DefaultTTL)
-		log.Printf("created new fallback session for %s via %s", clientAddr.String(), newConn.LocalAddr())
+		log.Infof("created new fallback session for %s via %s", clientAddr.String(), newConn.LocalAddr())
 
 		// Start a goroutine to forward replies for this new session.
 		go m.forwardReplies(newConn, clientAddr)
@@ -601,7 +600,7 @@ func (m *FallbackManager) HandlePacket(packet []byte, clientAddr net.Addr) {
 	// Forward the client's packet to the fallback address.
 	_, err := proxyConn.WriteTo(packet, m.fallbackAddr)
 	if err != nil {
-		log.Printf("fallback write to %s for client %s failed: %v", m.fallbackAddr, clientKey, err)
+		log.Errorf("fallback write to %s for client %v failed: %v", m.fallbackAddr, clientKey, err)
 	}
 }
 
@@ -610,7 +609,7 @@ func (m *FallbackManager) HandlePacket(packet []byte, clientAddr net.Addr) {
 // main server connection. This method runs in its own goroutine for each session
 // and exits when the proxy connection is closed by the cache's eviction handler.
 func (m *FallbackManager) forwardReplies(proxyConn net.PacketConn, clientAddr net.Addr) {
-	defer log.Printf("ending fallback reply forwarder for %s", clientAddr.String())
+	defer log.Infof("ending fallback reply forwarder for %s", clientAddr.String())
 
 	buf := make([]byte, 65535) // max UDP packet size
 	for {
@@ -619,7 +618,7 @@ func (m *FallbackManager) forwardReplies(proxyConn net.PacketConn, clientAddr ne
 			// Error is expected when the connection is closed by the eviction handler.
 			// net.ErrClosed is the specific error returned in this case.
 			if !errors.Is(err, net.ErrClosed) {
-				log.Printf("fallback read from proxy conn for %s failed: %v", clientAddr, err)
+				log.Errorf("fallback read from proxy conn for %s failed: %v", clientAddr, err)
 			}
 			return // Exit goroutine.
 		}
@@ -627,7 +626,7 @@ func (m *FallbackManager) forwardReplies(proxyConn net.PacketConn, clientAddr ne
 		// Got a reply from the fallback server. Forward it to the original client.
 		_, writeErr := m.mainConn.WriteTo(buf[:n], clientAddr)
 		if writeErr != nil {
-			log.Printf("fallback write to client %s failed: %v", clientAddr, writeErr)
+			log.Errorf("fallback write to client %s failed: %v", clientAddr, writeErr)
 			// If we can't write to the client, we don't need to do anything special.
 			// The session will eventually time out and be cleaned up if the client
 			// stops sending packets.
@@ -645,7 +644,7 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 		n, addr, err := dnsConn.ReadFrom(buf[:])
 		if err != nil {
 			if err, ok := err.(net.Error); ok && err.Temporary() {
-				log.Printf("ReadFrom temporary error: %v", err)
+				log.Warnf("ReadFrom temporary error: %v", err)
 				continue
 			}
 			return err
@@ -658,7 +657,7 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 				// Packet is not a valid DNS message, forward it if fallback is configured.
 				fallbackMgr.HandlePacket(buf[:n], addr)
 			} else {
-				log.Printf("cannot parse DNS query from %s: %v", addr, err)
+				log.Debugf("cannot parse DNS query from %s: %v", addr, err)
 			}
 			continue
 		}
@@ -684,7 +683,7 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 			// Payload is not long enough to contain a ClientID.
 			if resp != nil && resp.Rcode() == dns.RcodeNoError {
 				resp.Flags |= dns.RcodeNameError
-				log.Printf("NXDOMAIN: %d bytes are too short to contain a ClientID", n)
+				log.Debugf("NXDOMAIN: %d bytes are too short to contain a ClientID", n)
 			}
 		}
 		// If a response is called for, pass it to sendLoop via the channel.
@@ -799,13 +798,13 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 
 		buf, err := rec.Resp.WireFormat()
 		if err != nil {
-			log.Printf("resp WireFormat: %v", err)
+			log.Errorf("resp WireFormat: %v", err)
 			continue
 		}
 		// Truncate if necessary.
 		// https://tools.ietf.org/html/rfc1035#section-4.1.1
 		if len(buf) > maxUDPPayload {
-			log.Printf("truncating response of %d bytes to max of %d", len(buf), maxUDPPayload)
+			log.Warnf("truncating response of %d bytes to max of %d", len(buf), maxUDPPayload)
 			buf = buf[:maxUDPPayload]
 			buf[2] |= 0x02 // TC = 1
 		}
@@ -817,9 +816,9 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 				return err
 			}
 			if err, ok := err.(net.Error); ok && err.Temporary() {
-				log.Printf("WriteTo temporary error: %v", err)
+				log.Warnf("WriteTo temporary error: %v", err)
 			} else {
-				log.Printf("WriteTo error: %v", err)
+				log.Warnf("WriteTo error: %v", err)
 			}
 			continue
 		}
@@ -918,7 +917,7 @@ func computeMaxEncodedPayload(limit int) int {
 func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr) error {
 	defer dnsConn.Close()
 
-	log.Printf("pubkey %x", noise.PubkeyFromPrivkey(privkey))
+	log.Infof("pubkey %x", noise.PubkeyFromPrivkey(privkey))
 
 	// We have a variable amount of room in which to encode downstream
 	// packets in each response, because each response must contain the
@@ -936,7 +935,7 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 		}
 		return fmt.Errorf("maximum UDP payload size of %d leaves only %d bytes for payload", maxUDPPayload, mtu)
 	}
-	log.Printf("effective MTU %d", mtu)
+	log.Infof("effective MTU %d", mtu)
 
 	// Start up the virtual PacketConn for turbotunnel.
 	ttConn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2)
@@ -948,7 +947,7 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	go func() {
 		err := acceptSessions(ln, privkey, mtu, upstream)
 		if err != nil {
-			log.Printf("acceptSessions: %v", err)
+			log.Warnf("acceptSessions: %v", err)
 		}
 	}()
 
@@ -967,7 +966,7 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	go func() {
 		err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload)
 		if err != nil {
-			log.Printf("sendLoop: %v", err)
+			log.Warnf("sendLoop: %v", err)
 		}
 	}()
 
@@ -1002,9 +1001,18 @@ Example:
 	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "with -gen-key, write server public key to file")
 	flag.StringVar(&udpAddr, "udp", "", "UDP address to listen on (required)")
 	flag.StringVar(&fallbackAddrString, "fallback", "", "UDP endpoint to forward non-DNS packets to (e.g., 127.0.0.1:8888)")
+
+	var logLevel string
+	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
 	flag.Parse()
 
-	log.SetFlags(log.LstdFlags | log.LUTC)
+	level, err := log.ParseLevel(logLevel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid log level: %s\n", logLevel)
+		os.Exit(1)
+	}
+	log.SetLevel(level)
+	log.SetFormatter(&log.TextFormatter{FullTimestamp: true, TimestampFormat: "2006-01-02 15:04:05"})
 
 	if genKey {
 		// -gen-key mode.
@@ -1046,7 +1054,7 @@ Example:
 				// Failure to resolve the host portion is only a
 				// warning. The name will be re-resolved on each
 				// net.Dial in handleStream.
-				log.Printf("warning: cannot resolve upstream host %+q: %v", upstreamHost, err)
+				log.Warnf("cannot resolve upstream host %+q: %v", upstreamHost, err)
 			} else if upstreamIPAddr.IP == nil {
 				// Handle the special case of an empty string
 				// for the host portion, which resolves to a nil
@@ -1101,8 +1109,8 @@ Example:
 			}
 		}
 		if len(privkey) == 0 {
-			log.Println("generating a temporary one-time keypair")
-			log.Println("use the -privkey or -privkey-file option for a persistent server keypair")
+			log.Warnf("generating a temporary one-time keypair")
+			log.Infof("use the -privkey or -privkey-file option for a persistent server keypair")
 			var err error
 			privkey, err = noise.GeneratePrivkey()
 			if err != nil {
@@ -1113,7 +1121,7 @@ Example:
 
 		err = run(privkey, domain, upstream, dnsConn, fallbackAddr)
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("%v", err)
 		}
 	}
 }

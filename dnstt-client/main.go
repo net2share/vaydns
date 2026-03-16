@@ -45,7 +45,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"net"
 	"net/http"
 	"os"
@@ -125,10 +125,10 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 		return fmt.Errorf("session %08x opening stream: %v", conv, err)
 	}
 	defer func() {
-		log.Printf("end stream %08x:%d", conv, stream.ID())
+		log.Debugf("end stream %08x:%d", conv, stream.ID())
 		stream.Close()
 	}()
-	log.Printf("begin stream %08x:%d", conv, stream.ID())
+	log.Debugf("begin stream %08x:%d", conv, stream.ID())
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -140,7 +140,7 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 			err = nil
 		}
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Printf("stream %08x:%d copy stream←local: %v", conv, stream.ID(), err)
+			log.Warnf("stream %08x:%d copy stream←local: %v", conv, stream.ID(), err)
 		}
 		local.CloseRead()
 		stream.Close()
@@ -153,7 +153,7 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32) error {
 			err = nil
 		}
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-			log.Printf("stream %08x:%d copy local←stream: %v", conv, stream.ID(), err)
+			log.Warnf("stream %08x:%d copy local←stream: %v", conv, stream.ID(), err)
 		}
 		local.CloseWrite()
 	}()
@@ -175,7 +175,7 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 	if mtu < 80 {
 		return fmt.Errorf("domain %s leaves only %d bytes for payload", domain, mtu)
 	}
-	log.Printf("effective MTU %d", mtu)
+	log.Infof("effective MTU %d", mtu)
 
 	// Open a KCP conn on the PacketConn.
 	conn, err := kcp.NewConn2(remoteAddr, nil, 0, 0, pconn)
@@ -183,10 +183,10 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 		return fmt.Errorf("opening KCP conn: %v", err)
 	}
 	defer func() {
-		log.Printf("end session %08x", conn.GetConv())
+		log.Debugf("end session %08x", conn.GetConv())
 		conn.Close()
 	}()
-	log.Printf("begin session %08x", conn.GetConv())
+	log.Infof("begin session %08x", conn.GetConv())
 	// Permit coalescing the payloads of consecutive sends.
 	conn.SetStreamMode(true)
 	// Disable the dynamic congestion window (limit only by the maximum of
@@ -231,7 +231,7 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 			defer local.Close()
 			err := handle(local.(*net.TCPConn), sess, conn.GetConv())
 			if err != nil {
-				log.Printf("handle: %v", err)
+				log.Warnf("handle: %v", err)
 			}
 		}()
 	}
@@ -285,9 +285,18 @@ Known TLS fingerprints for -utls are:
 	flag.StringVar(&utlsDistribution, "utls",
 		"4*random,3*Firefox_120,1*Firefox_105,3*Chrome_120,1*Chrome_102,1*iOS_14,1*iOS_13",
 		"choose TLS fingerprint from weighted distribution")
+
+	var logLevel string
+	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
 	flag.Parse()
 
-	log.SetFlags(log.LstdFlags | log.LUTC)
+	level, err := log.ParseLevel(logLevel)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid log level: %s\n", logLevel)
+		os.Exit(1)
+	}
+	log.SetLevel(level)
+	log.SetFormatter(&log.TextFormatter{FullTimestamp: true, TimestampFormat: "2006-01-02 15:04:05"})
 
 	if flag.NArg() != 2 {
 		flag.Usage()
@@ -334,7 +343,7 @@ Known TLS fingerprints for -utls are:
 		os.Exit(1)
 	}
 	if utlsClientHelloID != nil {
-		log.Printf("uTLS fingerprint %s %s", utlsClientHelloID.Client, utlsClientHelloID.Version)
+		log.Infof("uTLS fingerprint %s %s", utlsClientHelloID.Client, utlsClientHelloID.Version)
 	}
 
 	// Iterate over the remote resolver address options and select one and
@@ -410,6 +419,6 @@ Known TLS fingerprints for -utls are:
 	pconn = NewDNSPacketConn(pconn, remoteAddr, domain)
 	err = run(pubkey, domain, localAddr, remoteAddr, pconn)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("%v", err)
 	}
 }

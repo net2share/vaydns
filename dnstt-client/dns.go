@@ -7,7 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"net"
 	"time"
 
@@ -84,13 +84,13 @@ func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name) 
 	go func() {
 		err := c.recvLoop(transport)
 		if err != nil {
-			log.Printf("recvLoop: %v", err)
+			log.Errorf("recvLoop: %v", err)
 		}
 	}()
 	go func() {
 		err := c.sendLoop(transport, addr)
 		if err != nil {
-			log.Printf("sendLoop: %v", err)
+			log.Errorf("sendLoop: %v", err)
 		}
 	}()
 	return c
@@ -188,7 +188,7 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 		n, addr, err := transport.ReadFrom(buf[:])
 		if err != nil {
 			if err, ok := err.(net.Error); ok && err.Temporary() {
-				log.Printf("ReadFrom temporary error: %v", err)
+				log.Warnf("ReadFrom temporary error: %v", err)
 				continue
 			}
 			return err
@@ -197,7 +197,7 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 		// Got a response. Try to parse it as a DNS message.
 		resp, err := dns.MessageFromWireFormat(buf[:n])
 		if err != nil {
-			log.Printf("MessageFromWireFormat: %v", err)
+			log.Warnf("MessageFromWireFormat: %v", err)
 			continue
 		}
 
@@ -400,7 +400,7 @@ func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error 
 		// trying to send more than one packet per query.
 		err := c.send(transport, p, addr)
 		if err != nil {
-			log.Printf("send: %v", err)
+			log.Errorf("send: %v", err)
 			continue
 		}
 	}

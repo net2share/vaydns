@@ -5,7 +5,7 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
-	"log"
+	log "github.com/sirupsen/logrus"
 	"net"
 	"sync"
 	"time"
@@ -61,14 +61,14 @@ func NewTLSPacketConn(addr string, dialTLSContext func(ctx context.Context, netw
 			go func() {
 				err := c.recvLoop(conn)
 				if err != nil {
-					log.Printf("recvLoop: %v", err)
+					log.Errorf("recvLoop: %v", err)
 				}
 				wg.Done()
 			}()
 			go func() {
 				err := c.sendLoop(conn)
 				if err != nil {
-					log.Printf("sendLoop: %v", err)
+					log.Errorf("sendLoop: %v", err)
 				}
 				wg.Done()
 			}()
@@ -78,7 +78,7 @@ func NewTLSPacketConn(addr string, dialTLSContext func(ctx context.Context, netw
 			// Whenever the TLS connection dies, redial a new one.
 			conn, err = dial()
 			if err != nil {
-				log.Printf("dial tls: %v", err)
+				log.Errorf("dial tls: %v", err)
 				break
 			}
 		}
