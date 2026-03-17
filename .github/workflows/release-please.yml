@@ -1,0 +1,114 @@
+name: Release Please
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: 'Force create a release PR even without conventional commits'
+        type: boolean
+        default: false
+      release_as:
+        description: 'Force release as specific version (e.g., 1.0.0). Leave empty for auto.'
+        type: string
+        default: ''
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - name: Release Please
+        id: release
+        uses: googleapis/release-please-action@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          release-as: ${{ inputs.release_as || '' }}
+
+  build:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: arm
+            goarm: 7
+          - goos: linux
+            goarch: 386
+          - goos: windows
+            goarch: amd64
+            suffix: .exe
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+        run: |
+          ARCH=${{ matrix.goarch }}
+          if [ "$ARCH" = "arm" ]; then
+            ARCH="armv7"
+          fi
+          SUFFIX="${{ matrix.suffix }}"
+          go build -o "dnstt-client-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./dnstt-client
+          go build -o "dnstt-server-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./dnstt-server
+          chmod +x dnstt-client-* dnstt-server-*
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dnstt-${{ matrix.goos }}-${{ matrix.goarch == 'arm' && 'armv7' || matrix.goarch }}
+          path: |
+            dnstt-client-*
+            dnstt-server-*
+
+  upload-assets:
+    needs: [release-please, build]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name 'dnstt-client-*' -o -name 'dnstt-server-*' \) -exec cp {} release/ \;
+          cd release
+          for f in dnstt-*; do
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Upload to Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ needs.release-please.outputs.tag_name }} release/* --repo ${{ github.repository }}
