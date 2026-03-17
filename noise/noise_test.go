@@ -155,7 +155,7 @@ func TestUnexpectedPayload(t *testing.T) {
 			defer c.Close()
 			err := clientWithPayload(c)
 			if err != nil {
-				t.Fatal(err)
+				t.Error(err)
 			}
 		}()
 
@@ -206,7 +206,7 @@ func TestUnexpectedPayload(t *testing.T) {
 			defer s.Close()
 			err := serverWithPayload(s)
 			if err != nil {
-				t.Fatal(err)
+				t.Error(err)
 			}
 		}()
 
