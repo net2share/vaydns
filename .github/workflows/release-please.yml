@@ -30,7 +30,8 @@ jobs:
         uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          release-as: ${{ inputs.release_as || '' }}
+          # Pinned to 0.1.0 for initial release. Remove after first release.
+          release-as: ${{ inputs.release_as || '0.1.0' }}
 
   build:
     needs: release-please
