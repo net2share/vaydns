@@ -1,9 +1,14 @@
 dnstt-client/dnstt-client
 dnstt-server/dnstt-server
 
+# IDE
+.idea/
+.vscode/
+
 # AI Agents
 CLAUDE.md
 claude.md
+.claude/
 
 # Misc.
 temp/
