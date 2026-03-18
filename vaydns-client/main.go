@@ -44,7 +44,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	log "github.com/sirupsen/logrus"
 	"io"
 	"net"
 	"net/http"
@@ -52,6 +51,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 
 	utls "github.com/refraction-networking/utls"
 	"github.com/xtaci/kcp-go/v5"
@@ -64,7 +65,7 @@ import (
 const (
 	defaultIdleTimeout          = 10 * time.Second
 	defaultKeepAlive            = 2 * time.Second
-	defaultOpenStreamTimeout    = 3 * time.Second
+	defaultOpenStreamTimeout    = 10 * time.Second
 	defaultReconnectDelay       = 1 * time.Second
 	defaultReconnectMaxDelay    = 30 * time.Second
 	defaultSessionCheckInterval = 500 * time.Millisecond
@@ -154,7 +155,7 @@ type streamResult struct {
 	err    error
 }
 
-func handle(local *net.TCPConn, sess *smux.Session, conv uint32, streamTimeout time.Duration) error {
+func handle(local *net.TCPConn, sess *smux.Session, conv uint32, openStreamTimeout time.Duration) error {
 	ch := make(chan streamResult, 1)
 	go func() {
 		s, err := sess.OpenStream()
@@ -168,14 +169,14 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32, streamTimeout t
 			return fmt.Errorf("session %08x opening stream: %v", conv, r.err)
 		}
 		stream = r.stream
-	case <-time.After(streamTimeout):
+	case <-time.After(openStreamTimeout):
 		go func() {
 			r := <-ch
 			if r.stream != nil {
 				r.stream.Close()
 			}
 		}()
-		return fmt.Errorf("session %08x opening stream: timed out after %v", conv, streamTimeout)
+		return fmt.Errorf("session %08x opening stream: timed out after %v", conv, openStreamTimeout)
 	}
 
 	defer func() {
