@@ -291,10 +291,10 @@ func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string, idleTi
 			}
 			return err
 		}
-		log.Infof("begin stream %08x:%d", conn.GetConv(), stream.ID())
+		log.Infof("stream %08x:%d ready", conn.GetConv(), stream.ID())
 		go func() {
 			defer func() {
-				log.Debugf("end stream %08x:%d", conn.GetConv(), stream.ID())
+				log.Debugf("stream %08x:%d closed", conn.GetConv(), stream.ID())
 				stream.Close()
 			}()
 			err := handleStream(stream, upstream, conn.GetConv())
@@ -316,7 +316,7 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string, 
 			}
 			return err
 		}
-		log.Infof("begin session %08x", conn.GetConv())
+		log.Infof("session %08x ready", conn.GetConv())
 		// Permit coalescing the payloads of consecutive sends.
 		conn.SetStreamMode(true)
 		// Disable the dynamic congestion window (limit only by the
@@ -333,7 +333,7 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string, 
 		}
 		go func() {
 			defer func() {
-				log.Debugf("end session %08x", conn.GetConv())
+				log.Debugf("session %08x closed", conn.GetConv())
 				conn.Close()
 			}()
 			err := acceptStreams(conn, privkey, upstream, idleTimeout, keepAlive)

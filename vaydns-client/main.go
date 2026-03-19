@@ -354,7 +354,7 @@ func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.
 			}()
 		}
 
-		log.Warnf("session %08x died, reconnecting", conv)
+		log.Warnf("session %08x closed, reconnecting", conv)
 		sess.Close()
 		conn.Close()
 	}
