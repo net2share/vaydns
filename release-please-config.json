@@ -3,8 +3,7 @@
     ".": {
       "release-type": "go",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
-      "release-as": "0.1.0"
+      "bump-patch-for-minor-pre-major": true
     }
   }
 }
