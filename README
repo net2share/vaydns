@@ -464,7 +464,7 @@ fingerprint and more resilient to censorship injection.
 this long for a valid (NOERROR) response after
 sending a query. Forged responses (SERVFAIL, etc.)
 are skipped but consume time from this budget.
-Default: 200ms.
+Default: 400ms.
 -udp-shared-socket Use a single shared UDP socket (old behavior).
 -udp-accept-errors Pass through DNS error responses instead of
 filtering them. By default, non-NOERROR

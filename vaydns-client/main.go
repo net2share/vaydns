@@ -75,7 +75,7 @@ const (
 	defaultReconnectDelay       = 1 * time.Second
 	defaultReconnectMaxDelay    = 30 * time.Second
 	defaultSessionCheckInterval = 500 * time.Millisecond
-	defaultUDPResponseTimeout   = 200 * time.Millisecond
+	defaultUDPResponseTimeout   = 400 * time.Millisecond
 )
 
 // dnsNameCapacity returns the number of raw bytes that can be encoded in a DNS
