@@ -460,7 +460,11 @@ query, randomizing the source port. This makes the tunnel harder to
 fingerprint and more resilient to censorship injection.
 
 -udp-workers N Concurrent UDP workers. Default: 100.
--udp-timeout D Per-query response timeout. Default: 1s.
+-udp-timeout D Per-query UDP response timeout. Each worker waits
+this long for a valid (NOERROR) response after
+sending a query. Forged responses (SERVFAIL, etc.)
+are skipped but consume time from this budget.
+Default: 200ms.
 -udp-shared-socket Use a single shared UDP socket (old behavior).
 -udp-accept-errors Pass through DNS error responses instead of
 filtering them. By default, non-NOERROR
@@ -492,6 +496,29 @@ TCP listener remains open across reconnections.
 ```
 $ ./dnstt-client -idle-timeout 30s -keepalive 5s -max-streams 128 -doh https://doh.example/dns-query -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
 $ ./dnstt-server -idle-timeout 30s -keepalive 5s -udp :5300 -privkey-file server.key -domain t.example.com -upstream 127.0.0.1:8000
+```
+
+## Reconnect and stream options (client)
+
+These flags control how the client recovers from session failures and
+opens new streams.
+
+`-reconnect-min D` Initial delay before retrying session creation
+after a failure. Doubles on each subsequent
+failure up to reconnect-max. Default: 1s.
+`-reconnect-max D` Maximum backoff delay for session reconnect.
+Default: 30s.
+`-session-check-interval D` How often the listener loop checks whether the
+current session is still alive. Lower values
+detect dead sessions faster but increase CPU
+usage. Default: 500ms.
+`-open-stream-timeout D` Timeout for opening an smux stream on the
+current session. If the session is degraded
+and cannot open a stream in time, the
+connection is retried. Default: 10s.
+
+```
+$ ./dnstt-client -reconnect-min 500ms -reconnect-max 10s -session-check-interval 200ms -open-stream-timeout 5s -doh https://doh.example/dns-query -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
 ```
 
 ## E2E tests
