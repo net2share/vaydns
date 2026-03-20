@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/net2share/vaydns/compare/v0.1.0...v0.1.1) (2026-03-20)
+
+
+### Features
+
+* make timeout and reconnect settings configurable ([#15](https://github.com/net2share/vaydns/issues/15)) ([9648346](https://github.com/net2share/vaydns/commit/96483461a7e6d386fe9fae1bf35818d0a366af2e))
+* wire up dialerControl and improve flag descriptions ([e96f92e](https://github.com/net2share/vaydns/commit/e96f92e731cc188670d5b95655bc7673f987a4b5))
+
 ## 0.1.0 (2026-03-17)
 
 
