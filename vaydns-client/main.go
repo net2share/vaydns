@@ -189,7 +189,7 @@ func handle(local *net.TCPConn, sess *smux.Session, conv uint32, openStreamTimeo
 		log.Debugf("stream %08x:%d closed", conv, stream.ID())
 		stream.Close()
 	}()
-	log.Debugf("stream %08x:%d ready", conv, stream.ID())
+	log.Infof("stream %08x:%d ready", conv, stream.ID())
 
 	var wg sync.WaitGroup
 	wg.Add(2)
