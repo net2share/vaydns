@@ -656,6 +656,10 @@ Known TLS fingerprints for -utls are:
 		fmt.Fprintf(os.Stderr, "-session-check-interval (%s) must be greater than 0\n", sessionCheckInterval)
 		os.Exit(1)
 	}
+	if openStreamTimeout <= 0 {
+		fmt.Fprintf(os.Stderr, "-open-stream-timeout (%s) must be greater than 0\n", openStreamTimeout)
+		os.Exit(1)
+	}
 
 	rateLimiter := NewRateLimiter(rpsLimit)
 	if rateLimiter != nil {
