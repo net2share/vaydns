@@ -1021,8 +1021,13 @@ Example:
 	flag.StringVar(&fallbackAddrString, "fallback", "", "UDP endpoint to forward non-DNS packets to (e.g., 127.0.0.1:8888)")
 	flag.StringVar(&domainArg, "domain", "", "tunnel domain (e.g., t.example.com)")
 	flag.StringVar(&upstream, "upstream", "", "TCP address to forward tunneled connections to (e.g., 127.0.0.1:8000)")
-	flag.StringVar(&idleTimeoutStr, "idle-timeout", defaultIdleTimeout.String(), "session idle timeout duration (e.g. 10s, 1m)")
-	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (must be less than idle-timeout)")
+	// idle-timeout: if no data is received from a client for this long,
+	// the tunnel session is considered dead and torn down. Should match
+	// the client's -idle-timeout.
+	flag.StringVar(&idleTimeoutStr, "idle-timeout", defaultIdleTimeout.String(), "session idle timeout (e.g. 10s, 1m); tears down sessions with no data within this period")
+	// keepalive: how often smux sends keepalive pings. Must be shorter than
+	// idle-timeout. Should match the client's -keepalive value.
+	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 500ms); must be less than idle-timeout")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")

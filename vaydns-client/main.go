@@ -50,6 +50,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	log "github.com/sirupsen/logrus"
@@ -61,6 +62,11 @@ import (
 	"www.bamsoftware.com/git/dnstt.git/noise"
 	"www.bamsoftware.com/git/dnstt.git/turbotunnel"
 )
+
+// dialerControl is an optional callback for setting socket options (e.g.,
+// SO_MARK, SO_BINDTODEVICE) on raw UDP sockets before they are bound.
+// nil means no special socket options.
+var dialerControl func(network, address string, c syscall.RawConn) error
 
 const (
 	defaultIdleTimeout          = 10 * time.Second
@@ -429,8 +435,15 @@ Known TLS fingerprints for -utls are:
 	flag.IntVar(&maxQnameLen, "max-qname-len", 101, "maximum total QNAME length in wire format (0 = 253 per RFC 1035)")
 	flag.IntVar(&maxNumLabels, "max-num-labels", 0, "maximum number of data labels in query name (0 = unlimited)")
 	flag.Float64Var(&rpsLimit, "rps", 0, "limit outgoing DNS queries per second (0 = unlimited)")
-	flag.StringVar(&idleTimeoutStr, "idle-timeout", defaultIdleTimeout.String(), "session idle timeout duration (e.g. 10s, 1m)")
-	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (must be less than idle-timeout)")
+	// idle-timeout: if no data is received from the server for this long,
+	// the tunnel session is considered dead and the client will reconnect.
+	// Lower values detect broken connections faster but may cause spurious
+	// reconnects on slow or lossy DNS paths.
+	flag.StringVar(&idleTimeoutStr, "idle-timeout", defaultIdleTimeout.String(), "session idle timeout (e.g. 10s, 1m); reconnects if no data received within this period")
+	// keepalive: how often smux sends keepalive pings to detect dead sessions.
+	// Must be shorter than idle-timeout so multiple pings are attempted
+	// before the session is declared dead.
+	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 500ms); must be less than idle-timeout")
 	flag.StringVar(&reconnectMinStr, "reconnect-min", defaultReconnectDelay.String(), "minimum delay before retrying session creation (e.g. 500ms, 1s)")
 	flag.StringVar(&reconnectMaxStr, "reconnect-max", defaultReconnectMaxDelay.String(), "maximum delay before retrying session creation (e.g. 5s, 30s)")
 	flag.StringVar(&sessionCheckIntervalStr, "session-check-interval", defaultSessionCheckInterval.String(), "interval for checking whether the current session is still alive (e.g. 100ms, 500ms)")
@@ -438,8 +451,15 @@ Known TLS fingerprints for -utls are:
 	flag.IntVar(&maxStreams, "max-streams", 256, "max concurrent streams per session (0 = unlimited)")
 	flag.IntVar(&udpWorkers, "udp-workers", 100, "number of concurrent UDP worker goroutines")
 	flag.BoolVar(&udpSharedSocket, "udp-shared-socket", false, "use a single shared UDP socket instead of per-query sockets")
+	// udp-timeout: how long each UDP worker waits for a DNS response after
+	// sending a query. If no response arrives, the query is considered lost.
 	flag.StringVar(&udpTimeoutStr, "udp-timeout", defaultUDPResponseTimeout.String(), "per-query UDP response timeout (e.g. 200ms, 1s)")
-	flag.BoolVar(&udpAcceptErrors, "udp-accept-errors", false, "accept DNS error responses instead of filtering them")
+	// udp-accept-errors: when given, non-NOERROR DNS responses (SERVFAIL,
+	// NXDOMAIN, REFUSED, etc.) are passed through instead of being dropped.
+	// By default, error responses are silently dropped assuming they are
+	// forged by censorship, and the worker keeps waiting for a real response
+	// until udp-timeout.
+	flag.BoolVar(&udpAcceptErrors, "udp-accept-errors", false, "accept DNS error responses instead of filtering them (disables censorship evasion)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -559,14 +579,15 @@ Known TLS fingerprints for -utls are:
 				return nil, nil, err
 			}
 			if udpSharedSocket {
-				pconn, err := net.ListenUDP("udp", nil)
+				lc := net.ListenConfig{Control: dialerControl}
+				pconn, err := lc.ListenPacket(context.Background(), "udp", ":0")
 				return addr, pconn, err
 			}
 			udpTimeout, err := time.ParseDuration(udpTimeoutStr)
 			if err != nil {
 				return nil, nil, fmt.Errorf("invalid -udp-timeout: %v", err)
 			}
-			pconn, err := NewUDPPacketConn(addr, nil, udpWorkers, udpTimeout, !udpAcceptErrors)
+			pconn, err := NewUDPPacketConn(addr, dialerControl, udpWorkers, udpTimeout, !udpAcceptErrors)
 			return addr, pconn, err
 		}},
 	} {

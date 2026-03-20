@@ -493,3 +493,22 @@ TCP listener remains open across reconnections.
 $ ./dnstt-client -idle-timeout 30s -keepalive 5s -max-streams 128 -doh https://doh.example/dns-query -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
 $ ./dnstt-server -idle-timeout 30s -keepalive 5s -udp :5300 -privkey-file server.key -domain t.example.com -upstream 127.0.0.1:8000
 ```
+
+## E2E tests
+
+End-to-end tests run the full tunnel stack in Docker containers. Requires
+Docker to be running.
+
+Run all tests:
+
+```
+$ bash e2e/run-test.sh
+```
+
+Or run individual tests:
+
+```
+$ bash e2e/tunnel/run.sh           # basic tunnel — fetch nginx page
+$ bash e2e/socks-download/run.sh   # 10MB file download via SOCKS5
+$ bash e2e/recovery/run.sh         # server crash recovery
+```
