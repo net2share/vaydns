@@ -110,8 +110,9 @@ func (rl *RateLimiter) Wait() {
 // be correlated. When sending a query, we generate a random ID, and when
 // receiving a response, we ignore the ID.
 type DNSPacketConn struct {
-	clientID turbotunnel.ClientID
-	domain   dns.Name
+	clientID   turbotunnel.ClientID
+	wireConfig turbotunnel.WireConfig
+	domain     dns.Name
 	// Sending on pollChan permits sendLoop to send an empty polling query.
 	// sendLoop also does its own polling according to a time schedule.
 	pollChan chan struct{}
@@ -141,14 +142,15 @@ type DNSPacketConn struct {
 // transport.WriteTo whenever a message needs to be sent.
 // maxQnameLen is the max total QNAME length (0 = 253 per RFC 1035).
 // maxNumLabels is the max number of data labels (0 = unlimited).
-func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int) *DNSPacketConn {
+func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig) *DNSPacketConn {
 	if maxQnameLen <= 0 || maxQnameLen > 253 {
 		maxQnameLen = 253
 	}
 	// Generate a new random ClientID.
-	clientID := turbotunnel.NewClientID()
+	clientID := turbotunnel.NewClientID(wireConfig.ClientIDSize)
 	c := &DNSPacketConn{
 		clientID:        clientID,
+		wireConfig:      wireConfig,
 		domain:          domain,
 		pollChan:        make(chan struct{}, pollLimit),
 		rateLimiter:     rateLimiter,
@@ -334,9 +336,13 @@ func chunks(p []byte, n int) [][]byte {
 // send sends p as a single packet encoded into a DNS query, using
 // transport.WriteTo(query, addr).
 //
-// Encoding format:
-//   - Data query:  [ClientID:2][DataLen:1][Data]
-//   - Poll query:  [ClientID:2][Nonce:4]  (4 random bytes for cache busting)
+// VayDNS encoding format:
+//   - Data query:  [ClientID:N][DataLen:1][Data]
+//   - Poll query:  [ClientID:N][Nonce:4]  (4 random bytes for cache busting)
+//
+// dnstt compatibility encoding format (when -compat dnstt):
+//   - Data query:  [ClientID:8][PaddingPrefix:224+3][Padding:3][DataLen:1][Data]
+//   - Poll query:  [ClientID:8][PaddingPrefix:224+8][Padding:8]
 //
 // The encoded bytes are base32-encoded, split into 63-byte labels, and
 // appended with the tunnel domain to form the DNS query name. Label count
@@ -376,18 +382,31 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 	var decoded []byte
 	{
 		var buf bytes.Buffer
-		// ClientID (2 bytes)
-		buf.Write(c.clientID[:])
+		buf.Write(c.clientID.Bytes())
 		if len(p) > 0 {
-			// Data packet: length prefix + data
-			if len(p) > 255 {
-				return fmt.Errorf("too long")
+			if c.wireConfig.IsDnstt() {
+				// dnstt data: [ClientID][PaddingPrefix:224+3][Padding:3][DataLen:1][Data]
+				if len(p) > c.wireConfig.MaxDataLen() {
+					return fmt.Errorf("too long")
+				}
+				buf.WriteByte(224 + 3)
+				io.CopyN(&buf, rand.Reader, 3)
+			} else {
+				if len(p) > c.wireConfig.MaxDataLen() {
+					return fmt.Errorf("too long")
+				}
 			}
 			buf.WriteByte(byte(len(p)))
 			buf.Write(p)
 		} else {
-			// Poll: random nonce for cache busting
-			io.CopyN(&buf, rand.Reader, pollNonceLen)
+			if c.wireConfig.IsDnstt() {
+				// dnstt poll: [ClientID][PaddingPrefix:224+8][Padding:8]
+				buf.WriteByte(224 + 8)
+				io.CopyN(&buf, rand.Reader, 8)
+			} else {
+				// vaydns poll: [ClientID][Nonce:4]
+				io.CopyN(&buf, rand.Reader, pollNonceLen)
+			}
 		}
 		decoded = buf.Bytes()
 	}

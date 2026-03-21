@@ -2,7 +2,7 @@
 
 Userspace DNS tunnel with support for DoH, DoT, and plaintext UDP.
 
-> VayDNS is a fork of [dnstt](https://www.bamsoftware.com/software/dnstt/) by David Fifield, with protocol optimizations and additional features. The wire protocol is **incompatible** with upstream dnstt — client and server must both be VayDNS.
+> VayDNS is a fork of [dnstt](https://www.bamsoftware.com/software/dnstt/) by David Fifield, with protocol optimizations and additional features. The wire protocol differs from upstream dnstt by default, but the `-dnstt-compat` flag enables interoperability with original dnstt clients and servers.
 
 ## Features
 
@@ -133,6 +133,8 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-idle-timeout D`    | Session idle timeout (must match client)                          | `10s`      |
 | `-keepalive D`       | Keepalive ping interval (must match client, must be < idle-timeout) | `2s`       |
 | `-fallback ADDR`     | UDP endpoint to forward non-DNS packets to (e.g. `127.0.0.1:8888`) | —          |
+| `-dnstt-compat`      | Use original dnstt wire format (8-byte ClientID, padding prefixes) | `false`    |
+| `-clientid-size N`   | ClientID size in bytes (ignored when `-dnstt-compat` is set)       | `2`        |
 | `-log-level LEVEL`   | Log level: debug, info, warning, error                            | `warning`  |
 
 ### Client flags
@@ -196,13 +198,15 @@ These reduce upstream throughput but improve compatibility. The minimum effectiv
 > maxQnameLen >= dataLabelWireBytes + domainWireLen
 > ```
 >
-> Where `domainWireLen` is the wire-format length of the tunnel domain (`1 + len` per label — e.g. `t.example.com` = 14 bytes), and `dataLabelWireBytes` must leave enough room for 53 raw bytes after base32 encoding and VayDNS framing (2-byte ClientID + 1-byte data length). The default `max-qname-len=101` is sized to hit exactly 50 bytes MTU with a domain like `t.example.com`. Longer domains require a higher `max-qname-len` or more labels — the client will exit with a detailed error if the combination is too restrictive.
+> Where `domainWireLen` is the wire-format length of the tunnel domain (`1 + len` per label — e.g. `t.example.com` = 14 bytes), and `dataLabelWireBytes` must leave enough room for 53 raw bytes after base32 encoding and framing overhead (3 bytes in default mode, 13 bytes with `-dnstt-compat`). The default `max-qname-len=101` is sized to hit exactly 50 bytes MTU with a domain like `t.example.com`. With `-dnstt-compat`, the default is raised to 253 to accommodate the larger overhead. The client will exit with an error if the combination produces an MTU below 50 bytes.
 
 #### Other
 
 | Flag               | Description                                                | Default         |
 | ------------------ | ---------------------------------------------------------- | --------------- |
 | `-rps N`           | Rate limit outgoing DNS queries per second (0 = unlimited). Uses a token bucket with 1-second burst allowance. | `0`             |
+| `-dnstt-compat`    | Use original dnstt wire format (8-byte ClientID, padding prefixes). Sets `-max-qname-len` to 253 unless explicitly overridden. | `false`         |
+| `-clientid-size N` | ClientID size in bytes (ignored when `-dnstt-compat` is set) | `2`             |
 | `-utls SPEC`       | TLS fingerprint distribution (see below)                   | weighted random |
 | `-log-level LEVEL` | Log level: debug, info, warning, error                     | `warning`       |
 
@@ -345,13 +349,33 @@ Downstream (server → client) payload depends on the UDP response size. The `-m
 
 Both client and server log their effective MTU at startup. The server's effective MTU is the minimum guaranteed across all responses (some responses may have more space depending on the query size).
 
-## VayDNS changes from dnstt
+## dnstt compatibility
 
-1. **ClientID reduced from 8 to 2 bytes** — saves 6 bytes per query. 65,536 unique IDs; birthday-paradox collision at ~256 concurrent clients is acceptable for typical DNS tunnel deployments.
+By default, VayDNS uses a leaner wire protocol than dnstt (2-byte ClientID, no padding). The `-dnstt-compat` flag restores the original dnstt format on both client and server, enabling interoperability with upstream dnstt binaries.
 
-2. **Padding removed from data packets** — the old format added 3 random padding bytes to data queries and 8 bytes to polls. VayDNS uses no padding for data (the payload itself makes each query unique) and a 4-byte random nonce for polls (cache busting). In UDP mode the tunnel is detectable regardless of padding; in DoH/DoT mode the query content is encrypted.
+```sh
+# VayDNS server accepting connections from original dnstt clients
+./vaydns-server -udp :5300 -dnstt-compat -privkey-file server.key \
+  -domain t.example.com -upstream 127.0.0.1:8000
 
-3. **Wire protocol is incompatible** — client and server must both be VayDNS.
+# VayDNS client connecting to an original dnstt server
+./vaydns-client -doh https://doh.example/dns-query -dnstt-compat \
+  -pubkey-file server.pub -domain t.example.com -listen 127.0.0.1:7000
+```
+
+Both sides must use the same mode — mixing compat and non-compat will fail silently.
+
+The `-clientid-size` flag allows setting a custom ClientID size (e.g. 4 bytes) without enabling the full dnstt padding format. It is ignored when `-dnstt-compat` is set.
+
+### Wire protocol differences
+
+| Aspect | VayDNS (default) | dnstt / `-dnstt-compat` |
+| ------ | ---------------- | ----------------------- |
+| ClientID | 2 bytes | 8 bytes |
+| Data packet | `[ClientID][DataLen:1][Data]` | `[ClientID][224+3][Padding:3][DataLen:1][Data]` |
+| Poll packet | `[ClientID][Nonce:4]` | `[ClientID][224+8][Padding:8]` |
+| Max data/query | 255 bytes | 223 bytes |
+| Default max QNAME | 101 bytes | 253 bytes (full RFC 1035) |
 
 ## E2E tests
 

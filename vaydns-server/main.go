@@ -344,10 +344,10 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string, 
 	}
 }
 
-// nextPacket reads the next length-prefixed packet from r. It returns a nil
-// error only when a packet was read successfully. It returns io.EOF only when
-// there were 0 bytes remaining to read from r. It returns io.ErrUnexpectedEOF
-// when EOF occurs in the middle of an encoded packet.
+// nextPacket reads the next length-prefixed packet from r using the VayDNS
+// wire format. It returns io.EOF only when there were 0 bytes remaining to
+// read from r. It returns io.ErrUnexpectedEOF when EOF occurs in the middle
+// of an encoded packet.
 func nextPacket(r *bytes.Reader) ([]byte, error) {
 	eof := func(err error) error {
 		if err == io.EOF {
@@ -363,6 +363,37 @@ func nextPacket(r *bytes.Reader) ([]byte, error) {
 	p := make([]byte, int(prefix))
 	_, err = io.ReadFull(r, p)
 	return p, eof(err)
+}
+
+// nextPacketDnstt reads the next packet from r using the original dnstt wire
+// format with padding awareness. A prefix byte >= 224 indicates padding: the
+// value (prefix - 224) gives the number of padding bytes that follow and are
+// discarded. A prefix byte < 224 is a data length prefix. This handles both
+// data packets (3 bytes padding) and poll packets (8 bytes padding).
+func nextPacketDnstt(r *bytes.Reader) ([]byte, error) {
+	eof := func(err error) error {
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
+		return err
+	}
+
+	for {
+		prefix, err := r.ReadByte()
+		if err != nil {
+			return nil, err
+		}
+		if prefix >= 224 {
+			paddingLen := int64(prefix - 224)
+			if _, err := io.CopyN(io.Discard, r, paddingLen); err != nil {
+				return nil, eof(err)
+			}
+		} else {
+			p := make([]byte, int(prefix))
+			_, err = io.ReadFull(r, p)
+			return p, eof(err)
+		}
+	}
 }
 
 // responseFor constructs a response dns.Message that is appropriate for query.
@@ -639,7 +670,7 @@ func (m *FallbackManager) forwardReplies(proxyConn net.PacketConn, clientAddr ne
 // the incoming DNS queries, and puts them on ttConn's incoming queue. Whenever
 // a query calls for a response, constructs a partial response and passes it to
 // sendLoop over ch. Invalid DNS packets are passed to the FallbackManager.
-func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch chan<- *record, fallbackMgr *FallbackManager, stats *ServerStats) error {
+func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch chan<- *record, fallbackMgr *FallbackManager, stats *ServerStats, wireConfig turbotunnel.WireConfig) error {
 	for {
 		var buf [4096]byte
 		n, addr, err := dnsConn.ReadFrom(buf[:])
@@ -668,24 +699,30 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 		resp, payload := responseFor(&query, domain)
 		// Extract the ClientID from the payload.
 		var clientID turbotunnel.ClientID
-		n = copy(clientID[:], payload)
-		payload = payload[n:]
-		if n == len(clientID) {
+		if len(payload) < wireConfig.ClientIDSize {
+			// Payload is not long enough to contain a ClientID.
+			if resp != nil && resp.Rcode() == dns.RcodeNoError {
+				resp.Flags |= dns.RcodeNameError
+				log.Debugf("NXDOMAIN: %d bytes are too short to contain a ClientID", len(payload))
+			}
+		} else {
+			clientID = turbotunnel.ClientID(string(payload[:wireConfig.ClientIDSize]))
+			payload = payload[wireConfig.ClientIDSize:]
 			// Pull out the packets contained in the payload.
 			r := bytes.NewReader(payload)
 			for {
-				p, err := nextPacket(r)
+				var p []byte
+				var err error
+				if wireConfig.IsDnstt() {
+					p, err = nextPacketDnstt(r)
+				} else {
+					p, err = nextPacket(r)
+				}
 				if err != nil {
 					break
 				}
 				// Feed the incoming packet to KCP.
 				ttConn.QueueIncoming(p, clientID)
-			}
-		} else {
-			// Payload is not long enough to contain a ClientID.
-			if resp != nil && resp.Rcode() == dns.RcodeNoError {
-				resp.Flags |= dns.RcodeNameError
-				log.Debugf("NXDOMAIN: %d bytes are too short to contain a ClientID", n)
 			}
 		}
 		// If a response is called for, pass it to sendLoop via the channel.
@@ -919,7 +956,7 @@ func computeMaxEncodedPayload(limit int) int {
 	return low
 }
 
-func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration) error {
+func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration, wireConfig turbotunnel.WireConfig) error {
 	defer dnsConn.Close()
 
 	log.Infof("pubkey %x", noise.PubkeyFromPrivkey(privkey))
@@ -984,7 +1021,7 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 		}
 	}()
 
-	return recvLoop(domain, dnsConn, ttConn, ch, fallbackMgr, stats)
+	return recvLoop(domain, dnsConn, ttConn, ch, fallbackMgr, stats, wireConfig)
 }
 
 func main() {
@@ -998,6 +1035,8 @@ func main() {
 	var fallbackAddrString string
 	var idleTimeoutStr string
 	var keepAliveStr string
+	var compatDnstt bool
+	var clientIDSize int
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -1028,6 +1067,8 @@ Example:
 	// keepalive: how often smux sends keepalive pings. Must be shorter than
 	// idle-timeout. Should match the client's -keepalive value.
 	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 500ms); must be less than idle-timeout")
+	flag.BoolVar(&compatDnstt, "dnstt-compat", false, "use original dnstt wire format (8-byte ClientID, padding prefixes)")
+	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes (ignored when -dnstt-compat is set)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -1170,7 +1211,19 @@ Example:
 			os.Exit(1)
 		}
 
-		err = run(privkey, domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive)
+		var wireConfig turbotunnel.WireConfig
+		if compatDnstt {
+			wireConfig = turbotunnel.WireConfig{ClientIDSize: 8, Compat: true}
+		} else {
+			if clientIDSize <= 0 {
+				fmt.Fprintf(os.Stderr, "-clientid-size must be positive\n")
+				os.Exit(1)
+			}
+			wireConfig = turbotunnel.WireConfig{ClientIDSize: clientIDSize}
+		}
+		log.Infof("wire config: clientid-size=%d compat=%v", wireConfig.ClientIDSize, wireConfig.Compat)
+
+		err = run(privkey, domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive, wireConfig)
 		if err != nil {
 			log.Fatalf("%v", err)
 		}

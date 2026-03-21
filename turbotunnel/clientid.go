@@ -14,19 +14,26 @@ import (
 // communications, enabling the server to disambiguate requests among its many
 // clients. ClientID implements the net.Addr interface.
 //
-// ClientID is reduced from 8 bytes to 2 bytes to minimize overhead for
-// constrained DNS tunnels. 2 bytes = 65536 unique IDs, sufficient for
-// most deployments where concurrent client count is low.
-type ClientID [2]byte
+// ClientID is backed by a string (immutable and comparable) so it can serve as
+// a map key in RemoteMap while supporting variable sizes. The default size is
+// 2 bytes; dnstt compatibility mode uses 8 bytes.
+type ClientID string
 
-func NewClientID() ClientID {
-	var id ClientID
-	_, err := rand.Read(id[:])
+// NewClientID generates a random ClientID of the given byte size.
+func NewClientID(size int) ClientID {
+	buf := make([]byte, size)
+	_, err := rand.Read(buf)
 	if err != nil {
 		panic(err)
 	}
-	return id
+	return ClientID(buf)
 }
 
 func (id ClientID) Network() string { return "clientid" }
-func (id ClientID) String() string  { return hex.EncodeToString(id[:]) }
+func (id ClientID) String() string  { return hex.EncodeToString([]byte(id)) }
+
+// Bytes returns the raw bytes of the ClientID.
+func (id ClientID) Bytes() []byte { return []byte(id) }
+
+// Len returns the byte length of the ClientID.
+func (id ClientID) Len() int { return len(id) }

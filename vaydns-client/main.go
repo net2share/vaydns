@@ -257,12 +257,10 @@ func createTunnelSession(pconn net.PacketConn, remoteAddr net.Addr, pubkey []byt
 	return conn, sess, nil
 }
 
-func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn, maxQnameLen int, maxNumLabels int, idleTimeout time.Duration, keepAlive time.Duration, reconnectMinDelay time.Duration, reconnectMaxDelay time.Duration, sessionCheckInterval time.Duration, streamTimeout time.Duration, maxStreams int, transportErrCh <-chan error) error {
+func run(pubkey []byte, domain dns.Name, localAddr *net.TCPAddr, remoteAddr net.Addr, pconn net.PacketConn, maxQnameLen int, maxNumLabels int, idleTimeout time.Duration, keepAlive time.Duration, reconnectMinDelay time.Duration, reconnectMaxDelay time.Duration, sessionCheckInterval time.Duration, streamTimeout time.Duration, maxStreams int, transportErrCh <-chan error, wireConfig turbotunnel.WireConfig) error {
 	defer pconn.Close()
 
-	const clientIDSize = 2
-	const dataLenSize = 1
-	mtu := dnsNameCapacity(domain, maxQnameLen, maxNumLabels) - clientIDSize - dataLenSize
+	mtu := dnsNameCapacity(domain, maxQnameLen, maxNumLabels) - wireConfig.DataOverhead()
 	const kcpMinMTU = 50
 	if mtu < kcpMinMTU {
 		domainWireLen := 0
@@ -389,6 +387,8 @@ func main() {
 	var udpSharedSocket bool
 	var udpTimeoutStr string
 	var udpAcceptErrors bool
+	var compatDnstt bool
+	var clientIDSize int
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -460,6 +460,8 @@ Known TLS fingerprints for -utls are:
 	// forged by censorship, and the worker keeps waiting for a real response
 	// until udp-timeout.
 	flag.BoolVar(&udpAcceptErrors, "udp-accept-errors", false, "accept DNS error responses instead of filtering them (disables censorship evasion)")
+	flag.BoolVar(&compatDnstt, "dnstt-compat", false, "use original dnstt wire format (8-byte ClientID, padding prefixes)")
+	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes (ignored when -dnstt-compat is set)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -661,12 +663,45 @@ Known TLS fingerprints for -utls are:
 		os.Exit(1)
 	}
 
+	var wireConfig turbotunnel.WireConfig
+	if compatDnstt {
+		wireConfig = turbotunnel.WireConfig{ClientIDSize: 8, Compat: true}
+		// dnstt uses full RFC 253-byte QNAME by default. Override the
+		// vaydns default of 101 unless the user explicitly set it.
+		maxQnameLenSet := false
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "max-qname-len" {
+				maxQnameLenSet = true
+			}
+		})
+		if !maxQnameLenSet {
+			maxQnameLen = 253
+		}
+	} else {
+		if clientIDSize <= 0 {
+			fmt.Fprintf(os.Stderr, "-clientid-size must be positive\n")
+			os.Exit(1)
+		}
+		wireConfig = turbotunnel.WireConfig{ClientIDSize: clientIDSize}
+	}
+
+	// Validate that the QNAME length produces a usable MTU.
+	capacity := dnsNameCapacity(domain, maxQnameLen, maxNumLabels)
+	overhead := wireConfig.DataOverhead()
+	if capacity-overhead < 50 {
+		fmt.Fprintf(os.Stderr, "-max-qname-len %d with %d-byte overhead leaves only %d bytes for payload (need 50); increase -max-qname-len\n",
+			maxQnameLen, overhead, capacity-overhead)
+		os.Exit(1)
+	}
+
+	log.Infof("wire config: clientid-size=%d compat=%v", wireConfig.ClientIDSize, wireConfig.Compat)
+
 	rateLimiter := NewRateLimiter(rpsLimit)
 	if rateLimiter != nil {
 		log.Infof("rate limiting DNS queries to %.1f requests per second", rpsLimit)
 	}
-	dnsPconn := NewDNSPacketConn(pconn, remoteAddr, domain, rateLimiter, maxQnameLen, maxNumLabels)
-	err = run(pubkey, domain, localAddr, remoteAddr, dnsPconn, maxQnameLen, maxNumLabels, idleTimeout, keepAlive, reconnectMinDelay, reconnectMaxDelay, sessionCheckInterval, openStreamTimeout, maxStreams, dnsPconn.TransportErrors())
+	dnsPconn := NewDNSPacketConn(pconn, remoteAddr, domain, rateLimiter, maxQnameLen, maxNumLabels, wireConfig)
+	err = run(pubkey, domain, localAddr, remoteAddr, dnsPconn, maxQnameLen, maxNumLabels, idleTimeout, keepAlive, reconnectMinDelay, reconnectMaxDelay, sessionCheckInterval, openStreamTimeout, maxStreams, dnsPconn.TransportErrors(), wireConfig)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}

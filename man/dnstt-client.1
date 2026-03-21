@@ -183,6 +183,23 @@ Shows the default value of
 .Fl utls
 and the available TLS fingerprint labels.
 
+.It Fl dnstt-compat
+Enable original dnstt wire protocol compatibility.
+Encodes packets in the original dnstt format (8-byte ClientID, padding
+prefixes) for connecting to a dnstt server. Also sets the default
+.Fl max-qname-len
+to 253 (the dnstt default) unless explicitly overridden.
+When set, the
+.Fl clientid-size
+option is ignored.
+
+.It Fl clientid-size Ar N
+Set the ClientID size in bytes.
+The default is 2.
+Ignored when
+.Fl compat
+is set.
+
 .El
 
 

@@ -146,6 +146,22 @@ You will know you need to use the
 option when you see messages like this on standard error:
 .Dl FORMERR: requester payload size 512 is too small (minimum 1232)
 
+.It Fl dnstt-compat
+Enable original dnstt wire protocol compatibility.
+Uses 8-byte ClientIDs and the padding-aware upstream packet format,
+allowing the server to accept connections from original dnstt clients.
+When set, the
+.Fl clientid-size
+option is ignored.
+
+
+.It Fl clientid-size Ar N
+Set the ClientID size in bytes.
+The default is 2.
+Ignored when
+.Fl compat
+is set.
+
 .El
 
 
