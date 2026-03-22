@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2](https://github.com/net2share/vaydns/compare/v0.1.1...v0.1.2) (2026-03-22)
+
+
+### Features
+
+* add -dnstt-compat flag for wire protocol compatibility ([#16](https://github.com/net2share/vaydns/issues/16)) ([e371e0c](https://github.com/net2share/vaydns/commit/e371e0c163fc72b216a29f76720df1f59ed9eeb7))
+
+
+### Bug Fixes
+
+* override server timeout defaults in -dnstt-compat mode ([cce9866](https://github.com/net2share/vaydns/commit/cce98664ab2221b8dae315e237dbba5daa73532f))
+
 ## [0.1.1](https://github.com/net2share/vaydns/compare/v0.1.0...v0.1.1) (2026-03-20)
 
 
