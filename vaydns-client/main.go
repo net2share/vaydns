@@ -666,16 +666,20 @@ Known TLS fingerprints for -utls are:
 	var wireConfig turbotunnel.WireConfig
 	if compatDnstt {
 		wireConfig = turbotunnel.WireConfig{ClientIDSize: 8, Compat: true}
-		// dnstt uses full RFC 253-byte QNAME by default. Override the
-		// vaydns default of 101 unless the user explicitly set it.
-		maxQnameLenSet := false
+		// Override vaydns defaults with dnstt-compatible values unless
+		// the user explicitly set them.
+		explicitFlags := make(map[string]bool)
 		flag.Visit(func(f *flag.Flag) {
-			if f.Name == "max-qname-len" {
-				maxQnameLenSet = true
-			}
+			explicitFlags[f.Name] = true
 		})
-		if !maxQnameLenSet {
+		if !explicitFlags["max-qname-len"] {
 			maxQnameLen = 253
+		}
+		if !explicitFlags["idle-timeout"] {
+			idleTimeout = 2 * time.Minute
+		}
+		if !explicitFlags["keepalive"] {
+			keepAlive = 10 * time.Second
 		}
 	} else {
 		if clientIDSize <= 0 {
@@ -683,6 +687,12 @@ Known TLS fingerprints for -utls are:
 			os.Exit(1)
 		}
 		wireConfig = turbotunnel.WireConfig{ClientIDSize: clientIDSize}
+	}
+
+	// Re-validate keepalive/idle after potential compat overrides.
+	if keepAlive >= idleTimeout {
+		fmt.Fprintf(os.Stderr, "-keepalive (%s) must be less than -idle-timeout (%s)\n", keepAlive, idleTimeout)
+		os.Exit(1)
 	}
 
 	// Validate that the QNAME length produces a usable MTU.

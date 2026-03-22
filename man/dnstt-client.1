@@ -186,9 +186,14 @@ and the available TLS fingerprint labels.
 .It Fl dnstt-compat
 Enable original dnstt wire protocol compatibility.
 Encodes packets in the original dnstt format (8-byte ClientID, padding
-prefixes) for connecting to a dnstt server. Also sets the default
+prefixes) for connecting to a dnstt server. Also overrides the following
+defaults to match dnstt unless explicitly set:
 .Fl max-qname-len
-to 253 (the dnstt default) unless explicitly overridden.
+to 253,
+.Fl idle-timeout
+to 2m,
+.Fl keepalive
+to 10s.
 When set, the
 .Fl clientid-size
 option is ignored.

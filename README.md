@@ -367,6 +367,18 @@ Both sides must use the same mode — mixing compat and non-compat will fail sil
 
 The `-clientid-size` flag allows setting a custom ClientID size (e.g. 4 bytes) without enabling the full dnstt padding format. It is ignored when `-dnstt-compat` is set.
 
+### What `-dnstt-compat` changes
+
+On both client and server, `-dnstt-compat` switches to the original dnstt wire format (8-byte ClientID, padding prefixes). On the client it also overrides the following defaults to match dnstt's values:
+
+| Setting | VayDNS default | With `-dnstt-compat` |
+| ------- | -------------- | -------------------- |
+| `-max-qname-len` | `101` | `253` |
+| `-idle-timeout` | `10s` | `2m` |
+| `-keepalive` | `2s` | `10s` |
+
+All three can be explicitly overridden even when `-dnstt-compat` is set — the flag only changes the defaults, it does not lock the values. For example, `-dnstt-compat -idle-timeout 30s` uses the dnstt wire format with a 30-second idle timeout.
+
 ### Wire protocol differences
 
 | Aspect | VayDNS (default) | dnstt / `-dnstt-compat` |
@@ -375,7 +387,6 @@ The `-clientid-size` flag allows setting a custom ClientID size (e.g. 4 bytes) w
 | Data packet | `[ClientID][DataLen:1][Data]` | `[ClientID][224+3][Padding:3][DataLen:1][Data]` |
 | Poll packet | `[ClientID][Nonce:4]` | `[ClientID][224+8][Padding:8]` |
 | Max data/query | 255 bytes | 223 bytes |
-| Default max QNAME | 101 bytes | 253 bytes (full RFC 1035) |
 
 ## E2E tests
 
