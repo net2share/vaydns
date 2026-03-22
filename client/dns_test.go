@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"bytes"
@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"www.bamsoftware.com/git/dnstt.git/dns"
+	"github.com/net2share/vaydns/dns"
 )
 
 func allPackets(buf []byte) ([][]byte, error) {

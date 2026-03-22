@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"bytes"
@@ -15,8 +15,8 @@ import (
 
 	log "github.com/sirupsen/logrus"
 
-	"www.bamsoftware.com/git/dnstt.git/dns"
-	"www.bamsoftware.com/git/dnstt.git/turbotunnel"
+	"github.com/net2share/vaydns/dns"
+	"github.com/net2share/vaydns/turbotunnel"
 )
 
 const (

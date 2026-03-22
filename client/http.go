@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"bytes"
@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"www.bamsoftware.com/git/dnstt.git/turbotunnel"
+	"github.com/net2share/vaydns/turbotunnel"
 )
 
 // A default Retry-After delay to use when there is no explicit Retry-After

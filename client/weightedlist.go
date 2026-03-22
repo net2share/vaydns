@@ -1,4 +1,4 @@
-package main
+package client
 
 // Random selection from weighted distributions, and strings for specifying such
 // distributions.

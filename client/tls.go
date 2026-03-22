@@ -1,4 +1,4 @@
-package main
+package client
 
 import (
 	"bufio"
@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"www.bamsoftware.com/git/dnstt.git/turbotunnel"
+	"github.com/net2share/vaydns/turbotunnel"
 )
 
 const dialTimeout = 30 * time.Second

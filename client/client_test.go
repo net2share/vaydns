@@ -1,20 +1,20 @@
-package main
+package client
 
 import (
 	"bytes"
 	"testing"
 
-	"www.bamsoftware.com/git/dnstt.git/dns"
+	"github.com/net2share/vaydns/dns"
 )
 
 func TestDNSNameCapacity(t *testing.T) {
-	const labelLen = 63 // DNS maximum label size
+	const labelLen = 63
 	for domainLen := 0; domainLen < 255; domainLen++ {
 		domain, err := dns.NewName(chunks(bytes.Repeat([]byte{'x'}, domainLen), 63))
 		if err != nil {
 			continue
 		}
-		capacity := dnsNameCapacity(domain, 0, 0) // 0 = unlimited for both
+		capacity := DNSNameCapacity(domain, 0, 0)
 		if capacity <= 0 {
 			continue
 		}
@@ -52,7 +52,7 @@ func TestDNSNameCapacityWithMaxQnameLen(t *testing.T) {
 				t.Fatalf("failed to parse domain %q: %v", tc.domainStr, err)
 			}
 
-			capacity := dnsNameCapacity(domain, tc.maxQnameLen, tc.maxNumLabels)
+			capacity := DNSNameCapacity(domain, tc.maxQnameLen, tc.maxNumLabels)
 
 			if tc.expectNonZero && capacity <= 0 {
 				t.Errorf("expected positive capacity, got %d", capacity)
@@ -77,10 +77,10 @@ func TestDNSNameCapacityMultiDomain(t *testing.T) {
 			t.Fatalf("failed to parse domain %q: %v", domainStr, err)
 		}
 
-		capacityUnlimited := dnsNameCapacity(domain, 0, 0)
-		capacityLimitedQname := dnsNameCapacity(domain, 150, 0)
-		capacityLimitedLabels := dnsNameCapacity(domain, 0, 2)
-		capacityBothLimits := dnsNameCapacity(domain, 150, 2)
+		capacityUnlimited := DNSNameCapacity(domain, 0, 0)
+		capacityLimitedQname := DNSNameCapacity(domain, 150, 0)
+		capacityLimitedLabels := DNSNameCapacity(domain, 0, 2)
+		capacityBothLimits := DNSNameCapacity(domain, 150, 2)
 
 		t.Logf("domain=%s | unlimited=%d qname150=%d labels2=%d both=%d",
 			domainStr, capacityUnlimited, capacityLimitedQname, capacityLimitedLabels, capacityBothLimits)
@@ -107,17 +107,15 @@ func TestDNSNameCapacityBoundaryConditions(t *testing.T) {
 		domainWireLen += 1 + len(label)
 	}
 
-	// Test boundary: maxQnameLen just barely larger than domain.
-	capacity := dnsNameCapacity(domain, domainWireLen+10, 0)
+	capacity := DNSNameCapacity(domain, domainWireLen+10, 0)
 	t.Logf("domainWireLen=%d, maxQnameLen=%d -> capacity=%d", domainWireLen, domainWireLen+10, capacity)
 
 	if capacity > 10 {
 		t.Errorf("expected small capacity for tight qname limit, got %d", capacity)
 	}
 
-	// Test that 0 maxNumLabels allows many labels.
-	capacityManyLabels := dnsNameCapacity(domain, 0, 0)
-	capacitySingleLabel := dnsNameCapacity(domain, 0, 1)
+	capacityManyLabels := DNSNameCapacity(domain, 0, 0)
+	capacitySingleLabel := DNSNameCapacity(domain, 0, 1)
 	if capacitySingleLabel >= capacityManyLabels {
 		t.Errorf("single label capacity %d should be < unlimited %d", capacitySingleLabel, capacityManyLabels)
 	}

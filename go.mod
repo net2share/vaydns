@@ -1,4 +1,4 @@
-module www.bamsoftware.com/git/dnstt.git
+module github.com/net2share/vaydns
 
 go 1.24.4
 

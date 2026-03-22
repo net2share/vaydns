@@ -1,4 +1,4 @@
-package main
+package client
 
 // Support code for TLS camouflage using uTLS.
 
@@ -50,9 +50,9 @@ var utlsClientHelloIDMap = []struct {
 	{"iOS_14", &utls.HelloIOS_14},
 }
 
-// utlsLookup returns a *utls.ClientHelloID from utlsClientHelloIDMap by a
-// case-insensitive label match, or nil if there is no match.
-func utlsLookup(label string) *utls.ClientHelloID {
+// UTLSLookup returns a *utls.ClientHelloID by case-insensitive label match,
+// or nil if there is no match.
+func UTLSLookup(label string) *utls.ClientHelloID {
 	for _, entry := range utlsClientHelloIDMap {
 		if strings.EqualFold(label, entry.Label) {
 			return entry.ID
@@ -64,7 +64,10 @@ func utlsLookup(label string) *utls.ClientHelloID {
 // utlsDialContext connects to the given network address and initiates a TLS
 // handshake with the provided ClientHelloID, and returns the resulting TLS
 // connection.
-func utlsDialContext(ctx context.Context, network, addr string, config *utls.Config, id *utls.ClientHelloID) (*utls.UConn, error) {
+// UTLSDialContext connects to the given network address and initiates a TLS
+// handshake with the provided ClientHelloID, and returns the resulting TLS
+// connection.
+func UTLSDialContext(ctx context.Context, network, addr string, config *utls.Config, id *utls.ClientHelloID) (*utls.UConn, error) {
 	// Set the SNI from addr, if not already set.
 	if config == nil {
 		config = &utls.Config{}
@@ -189,7 +192,7 @@ func makeRoundTripper(req *http.Request, config *utls.Config, id *utls.ClientHel
 		return nil, err
 	}
 
-	bootstrapConn, err := utlsDialContext(req.Context(), "tcp", addr, config, id)
+	bootstrapConn, err := UTLSDialContext(req.Context(), "tcp", addr, config, id)
 	if err != nil {
 		return nil, err
 	}
@@ -213,7 +216,7 @@ func makeRoundTripper(req *http.Request, config *utls.Config, id *utls.ClientHel
 		}
 
 		// Later dials make a new connection.
-		uconn, err := utlsDialContext(ctx, "tcp", addr, config, id)
+		uconn, err := UTLSDialContext(ctx, "tcp", addr, config, id)
 		if err != nil {
 			return nil, err
 		}
