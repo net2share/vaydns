@@ -133,7 +133,7 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-idle-timeout D`    | Session idle timeout (must match client)                          | `10s`      |
 | `-keepalive D`       | Keepalive ping interval (must match client, must be < idle-timeout) | `2s`       |
 | `-fallback ADDR`     | UDP endpoint to forward non-DNS packets to (e.g. `127.0.0.1:8888`) | —          |
-| `-dnstt-compat`      | Use original dnstt wire format (8-byte ClientID, padding prefixes) | `false`    |
+| `-dnstt-compat`      | Use original dnstt wire format (8-byte ClientID, padding prefixes). Also sets `-idle-timeout` to 2m and `-keepalive` to 10s unless explicitly overridden. | `false`    |
 | `-clientid-size N`   | ClientID size in bytes (ignored when `-dnstt-compat` is set)       | `2`        |
 | `-log-level LEVEL`   | Log level: debug, info, warning, error                            | `warning`  |
 
@@ -369,15 +369,17 @@ The `-clientid-size` flag allows setting a custom ClientID size (e.g. 4 bytes) w
 
 ### What `-dnstt-compat` changes
 
-On both client and server, `-dnstt-compat` switches to the original dnstt wire format (8-byte ClientID, padding prefixes). On the client it also overrides the following defaults to match dnstt's values:
+On both client and server, `-dnstt-compat` switches to the original dnstt wire format (8-byte ClientID, padding prefixes) and overrides the following defaults to match dnstt's values:
 
-| Setting | VayDNS default | With `-dnstt-compat` |
-| ------- | -------------- | -------------------- |
-| `-max-qname-len` | `101` | `253` |
-| `-idle-timeout` | `10s` | `2m` |
-| `-keepalive` | `2s` | `10s` |
+| Setting | VayDNS default | With `-dnstt-compat` | Applies to |
+| ------- | -------------- | -------------------- | ---------- |
+| `-max-qname-len` | `101` | `253` | client |
+| `-idle-timeout` | `10s` | `2m` | client and server |
+| `-keepalive` | `2s` | `10s` | client and server |
 
 All three can be explicitly overridden even when `-dnstt-compat` is set — the flag only changes the defaults, it does not lock the values. For example, `-dnstt-compat -idle-timeout 30s` uses the dnstt wire format with a 30-second idle timeout.
+
+> **Note:** The timeout defaults are critical for interop with original dnstt binaries. dnstt uses a 10-second keepalive interval (smux default) and a 2-minute idle timeout. Setting `-idle-timeout` below 10s in compat mode will cause sessions to churn because dnstt peers only send keepalives every 10 seconds. When mixing with dnstt, keep the compat defaults unless you know what you're doing.
 
 ### Wire protocol differences
 

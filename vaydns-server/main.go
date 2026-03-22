@@ -1214,6 +1214,23 @@ Example:
 		var wireConfig turbotunnel.WireConfig
 		if compatDnstt {
 			wireConfig = turbotunnel.WireConfig{ClientIDSize: 8, Compat: true}
+			// Override vaydns defaults with dnstt-compatible values unless
+			// the user explicitly set them.
+			explicitFlags := make(map[string]bool)
+			flag.Visit(func(f *flag.Flag) {
+				explicitFlags[f.Name] = true
+			})
+			if !explicitFlags["idle-timeout"] {
+				idleTimeout = 2 * time.Minute
+			}
+			if !explicitFlags["keepalive"] {
+				keepAlive = 10 * time.Second
+			}
+			// Re-validate after overrides.
+			if keepAlive >= idleTimeout {
+				fmt.Fprintf(os.Stderr, "-keepalive (%s) must be less than -idle-timeout (%s)\n", keepAlive, idleTimeout)
+				os.Exit(1)
+			}
 		} else {
 			if clientIDSize <= 0 {
 				fmt.Fprintf(os.Stderr, "-clientid-size must be positive\n")

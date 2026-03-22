@@ -130,7 +130,11 @@ Sessions with no data within this period are torn down.
 Should match the client's
 .Fl idle-timeout .
 Default:
-.Cm 10s .
+.Cm 10s
+(or
+.Cm 2m
+with
+.Fl dnstt-compat ) .
 
 .It Fl keepalive Ar DURATION
 Keepalive ping interval.
@@ -139,7 +143,11 @@ Must be less than
 Should match the client's
 .Fl keepalive .
 Default:
-.Cm 2s .
+.Cm 2s
+(or
+.Cm 10s
+with
+.Fl dnstt-compat ) .
 
 .It Fl fallback Ar ADDR
 UDP endpoint to forward non-DNS packets to.
@@ -151,6 +159,11 @@ This allows another service to share the same UDP port.
 Enable original dnstt wire protocol compatibility.
 Uses 8-byte ClientIDs and the padding-aware upstream packet format,
 allowing the server to accept connections from original dnstt clients.
+Also overrides the following defaults to match dnstt unless explicitly set:
+.Fl idle-timeout
+to 2m,
+.Fl keepalive
+to 10s.
 When set, the
 .Fl clientid-size
 option is ignored.
