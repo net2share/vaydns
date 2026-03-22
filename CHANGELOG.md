@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/net2share/vaydns/compare/v0.1.2...v0.2.0) (2026-03-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* Go module path changed. Update imports from www.bamsoftware.com/git/dnstt.git/* to github.com/net2share/vaydns/*
+
+### Features
+
+* extract client library package and rename Go module ([4b28bea](https://github.com/net2share/vaydns/commit/4b28beacf52768ceeda09cbcb42a9422f6cc2075))
+
 ## [0.1.2](https://github.com/net2share/vaydns/compare/v0.1.1...v0.1.2) (2026-03-22)
 
 
