@@ -172,6 +172,27 @@ func (ts *TunnelServer) effectiveMaxQnameLen() int {
 	return 101
 }
 
+// autoEscalateMaxQnameLen attempts to find a working max QNAME length when
+// the current setting produces an MTU that is too small. It tries progressively
+// larger values up to the RFC 1035 maximum of 253 bytes. If a working value is
+// found, it updates MaxQnameLen and returns the new MTU. Otherwise it returns 0.
+func (t *Tunnel) autoEscalateMaxQnameLen() int {
+	original := t.TunnelServer.effectiveMaxQnameLen()
+	for _, candidate := range []int{150, 200, 253} {
+		if candidate <= original {
+			continue
+		}
+		mtu := DNSNameCapacity(t.TunnelServer.Addr, candidate, t.TunnelServer.MaxNumLabels) - t.wireConfig.DataOverhead()
+		if mtu >= 50 {
+			log.Warnf("max-qname-len %d is too small for domain %s (MTU < 50); auto-raised to %d (MTU %d)",
+				original, t.TunnelServer.Addr, candidate, mtu)
+			t.TunnelServer.MaxQnameLen = candidate
+			return mtu
+		}
+	}
+	return 0
+}
+
 // Tunnel represents a DNS tunnel connection. Create with NewTunnel, then
 // either call the step-by-step Initiate* methods (for embedding in frameworks
 // like xray-core) or call ListenAndServe for a fully managed session.
@@ -337,9 +358,13 @@ func (t *Tunnel) InitiateKCPConn(mtu int) error {
 	if mtu <= 0 {
 		maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
 		mtu = DNSNameCapacity(t.TunnelServer.Addr, maxQnameLen, t.TunnelServer.MaxNumLabels) - t.wireConfig.DataOverhead()
+		if mtu < 50 {
+			mtu = t.autoEscalateMaxQnameLen()
+		}
 	}
 	if mtu < 50 {
-		return fmt.Errorf("MTU %d is too small (minimum 50)", mtu)
+		return fmt.Errorf("MTU %d is too small (minimum 50); try increasing -max-qname-len (current: %d, max: 253) or use a shorter -domain",
+			mtu, t.TunnelServer.effectiveMaxQnameLen())
 	}
 	t.TunnelServer.MTU = mtu
 	log.Infof("effective MTU %d", mtu)
@@ -496,7 +521,11 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 	maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
 	mtu := DNSNameCapacity(t.TunnelServer.Addr, maxQnameLen, t.TunnelServer.MaxNumLabels) - t.wireConfig.DataOverhead()
 	if mtu < 50 {
-		return fmt.Errorf("MTU %d is too small (minimum 50)", mtu)
+		mtu = t.autoEscalateMaxQnameLen()
+	}
+	if mtu < 50 {
+		return fmt.Errorf("MTU %d is too small (minimum 50); try increasing -max-qname-len (current: %d, max: 253) or use a shorter -domain",
+			mtu, t.TunnelServer.effectiveMaxQnameLen())
 	}
 	log.Infof("effective MTU %d", mtu)
 
