@@ -25,3 +25,5 @@ require (
 	golang.org/x/text v0.33.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
 )
+
+replace github.com/xtaci/kcp-go/v5 => github.com/selfishblackberry177/kcp-go/v5 v5.6.62-0.20260324224619-346e65222e30
