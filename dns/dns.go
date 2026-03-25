@@ -592,11 +592,11 @@ func EncodeRDataAAAA(p []byte) [][]byte {
 		record[0] = seq
 		seq++
 		copy(record[1:], p)
+		records = append(records, record)
 		if len(p) < 15 {
 			break
 		}
 		p = p[15:]
-		records = append(records, record)
 	}
 	return records
 }

@@ -651,3 +651,50 @@ func TestRDataAAAARoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestRDataAAAAEdgeCases(t *testing.T) {
+	// Test edge cases for sizes that previously would have lost data:
+	// Any size that's not a multiple of 15 bytes
+	testCases := []struct {
+		name     string
+		size     int
+	}{
+		{"1 byte", 1},
+		{"8 bytes", 8},
+		{"14 bytes", 14},
+		{"16 bytes", 16},
+		{"23 bytes", 23},
+		{"31 bytes", 31},
+		{"45 bytes", 45},
+		{"100 bytes", 100},
+		{"256 bytes", 256},
+		{"1000 bytes", 1000},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := make([]byte, tc.size)
+			for i := range p {
+				p[i] = byte(i % 256)
+			}
+			records := EncodeRDataAAAA(p)
+			decoded := DecodeRDataAAAA(records)
+			if !bytes.Equal(decoded, p) {
+				t.Errorf("Round trip failed: input %d bytes, got %d bytes back", len(p), len(decoded))
+				t.Errorf("  First difference at byte %d", firstDifferent(p, decoded))
+			}
+		})
+	}
+}
+
+func firstDifferent(a, b []byte) int {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if a[i] != b[i] {
+			return i
+		}
+	}
+	if len(a) != len(b) {
+		return len(a)
+	}
+	return -1
+}
