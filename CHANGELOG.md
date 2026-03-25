@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/radiumatic/vaydns/compare/v0.2.0...v0.2.1) (2026-03-25)
+
+
+### Features
+
+* change ([852a3cd](https://github.com/radiumatic/vaydns/commit/852a3cd5f2dc8ff50d800099228e2313803ca161))
+
 ## [0.2.0](https://github.com/net2share/vaydns/compare/v0.1.2...v0.2.0) (2026-03-22)
 
 
