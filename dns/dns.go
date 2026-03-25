@@ -46,7 +46,9 @@ var (
 
 const (
 	// https://tools.ietf.org/html/rfc1035#section-3.2.2
+	RRTypeA   = 1
 	RRTypeTXT = 16
+	RRTypeAAAA = 28
 	// https://tools.ietf.org/html/rfc6891#section-6.1.1
 	RRTypeOPT = 41
 
@@ -572,5 +574,64 @@ func EncodeRDataTXT(p []byte) []byte {
 	// <character-string>s".
 	buf.WriteByte(byte(len(p)))
 	buf.Write(p)
+	return buf.Bytes()
+}
+
+// EncodeRDataAAAA encodes a slice of bytes as multiple AAAA RDATA entries.
+// Each AAAA record carries up to 16 bytes. The input bytes are split into
+// chunks, with the first byte of each chunk being a sequence number, and
+// the remaining 15 bytes being payload data. The last chunk is padded with
+// zeros if necessary.
+//
+// https://tools.ietf.org/html/rfc3596#section-2.2
+func EncodeRDataAAAA(p []byte) [][]byte {
+	var records [][]byte
+	seq := byte(0)
+	for len(p) > 0 {
+		record := make([]byte, 16)
+		record[0] = seq
+		seq++
+		copy(record[1:], p)
+		if len(p) < 15 {
+			break
+		}
+		p = p[15:]
+		records = append(records, record)
+	}
+	return records
+}
+
+// DecodeRDataAAAA decodes multiple AAAA RDATA entries into a single byte slice.
+// Each AAAA record is expected to be exactly 16 bytes, with the first byte
+// being a sequence number. Records are sorted by sequence number before
+// concatenation.
+//
+// https://tools.ietf.org/html/rfc3596#section-2.2
+func DecodeRDataAAAA(records [][]byte) []byte {
+	if len(records) == 0 {
+		return nil
+	}
+	
+	// Sort records by sequence number
+	sorted := make([][]byte, len(records))
+	copy(sorted, records)
+	for i := 0; i < len(sorted)-1; i++ {
+		for j := i + 1; j < len(sorted); j++ {
+			if len(sorted[i]) < 1 || len(sorted[j]) < 1 {
+				continue
+			}
+			if sorted[i][0] > sorted[j][0] {
+				sorted[i], sorted[j] = sorted[j], sorted[i]
+			}
+		}
+	}
+	
+	var buf bytes.Buffer
+	for _, record := range sorted {
+		if len(record) < 1 {
+			continue
+		}
+		buf.Write(record[1:])
+	}
 	return buf.Bytes()
 }

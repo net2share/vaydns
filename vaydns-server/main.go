@@ -400,7 +400,7 @@ func nextPacketDnstt(r *bytes.Reader) ([]byte, error) {
 // Along with the dns.Message, it returns the query's decoded data payload. If
 // the returned dns.Message is nil, it means that there should be no response to
 // this query. If the returned dns.Message has an Rcode() of dns.RcodeNoError,
-// the message is a candidate for for carrying downstream data in a TXT record.
+// the message is a candidate for for carrying downstream data in AAAA records.
 func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 	resp := &dns.Message{
 		ID:       query.ID,
@@ -491,14 +491,14 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 		return resp, nil
 	}
 
-	if question.Type != dns.RRTypeTXT {
-		// We only support QTYPE == TXT.
+	if question.Type != dns.RRTypeAAAA {
+		// We only support QTYPE == AAAA.
 		resp.Flags |= dns.RcodeNameError
 		// No log message here; it's common for recursive resolvers to
-		// send NS or A queries when the client only asked for a TXT. I
+		// send NS or A queries when the client only asked for a AAAA. I
 		// suspect this is related to QNAME minimization, but I'm not
 		// sure. https://tools.ietf.org/html/rfc7816
-		// log.Printf("NXDOMAIN: QTYPE %d != TXT", question.Type)
+		// log.Printf("NXDOMAIN: QTYPE %d != AAAA", question.Type)
 		return resp, nil
 	}
 
@@ -835,7 +835,17 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			}
 			timer.Stop()
 
-			rec.Resp.Answer[0].Data = dns.EncodeRDataTXT(payload.Bytes())
+			aaaaRecords := dns.EncodeRDataAAAA(payload.Bytes())
+			rec.Resp.Answer = make([]dns.RR, len(aaaaRecords))
+			for i, rdata := range aaaaRecords {
+				rec.Resp.Answer[i] = dns.RR{
+					Name:  rec.Resp.Question[0].Name,
+					Type:  dns.RRTypeAAAA,
+					Class: dns.ClassIN,
+					TTL:   responseTTL,
+					Data:  rdata,
+				}
+			}
 		}
 
 		buf, err := rec.Resp.WireFormat()
@@ -868,7 +878,7 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 	return nil
 }
 
-// computeMaxEncodedPayload computes the maximum amount of downstream TXT RR
+// computeMaxEncodedPayload computes the maximum amount of downstream AAAA RR
 // data that keep the overall response size less than maxUDPPayload, in the
 // worst case when the response answers a query that has a maximum-length name
 // in its Question section. Returns 0 in the case that no amount of data makes
@@ -908,8 +918,8 @@ func computeMaxEncodedPayload(limit int) int {
 		Question: []dns.Question{
 			{
 				Name:  maxLengthName,
-				Type:  dns.RRTypeTXT,
-				Class: dns.RRTypeTXT,
+				Type:  dns.RRTypeAAAA,
+				Class: dns.ClassIN,
 			},
 		},
 		// EDNS(0)
@@ -924,16 +934,7 @@ func computeMaxEncodedPayload(limit int) int {
 		},
 	}
 	resp, _ := responseFor(query, dns.Name([][]byte{}))
-	// As in sendLoop.
-	resp.Answer = []dns.RR{
-		{
-			Name:  query.Question[0].Name,
-			Type:  query.Question[0].Type,
-			Class: query.Question[0].Class,
-			TTL:   responseTTL,
-			Data:  nil, // will be filled in below
-		},
-	}
+	// As in sendLoop, we create multiple AAAA records.
 
 	// Binary search to find the maximum payload length that does not result
 	// in a wire-format message whose length exceeds the limit.
@@ -941,7 +942,17 @@ func computeMaxEncodedPayload(limit int) int {
 	high := 32768
 	for low+1 < high {
 		mid := (low + high) / 2
-		resp.Answer[0].Data = dns.EncodeRDataTXT(make([]byte, mid))
+		aaaaRecords := dns.EncodeRDataAAAA(make([]byte, mid))
+		resp.Answer = make([]dns.RR, len(aaaaRecords))
+		for i, rdata := range aaaaRecords {
+			resp.Answer[i] = dns.RR{
+				Name:  query.Question[0].Name,
+				Type:  dns.RRTypeAAAA,
+				Class: dns.ClassIN,
+				TTL:   responseTTL,
+				Data:  rdata,
+			}
+		}
 		buf, err := resp.WireFormat()
 		if err != nil {
 			panic(err)

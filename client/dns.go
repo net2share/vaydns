@@ -97,7 +97,7 @@ func (rl *RateLimiter) Wait() {
 
 // DNSPacketConn provides a packet-sending and -receiving interface over various
 // forms of DNS. It handles the details of how packets and padding are encoded
-// as a DNS name in the Question section of an upstream query, and as a TXT RR
+// as a DNS name in the Question section of an upstream query, and as AAAA RRs
 // in downstream responses.
 //
 // DNSPacketConn does not handle the mechanics of actually sending and receiving
@@ -189,7 +189,7 @@ func (c *DNSPacketConn) TransportErrors() <-chan error {
 }
 
 // dnsResponsePayload extracts the downstream payload of a DNS response, encoded
-// into the RDATA of a TXT RR. It returns (nil, true) when the response has a
+// into the RDATA of AAAA RRs. It returns (nil, true) when the response has a
 // non-NoError RCODE, indicating a forged or hijacked response. It returns
 // (payload, false) on success or (nil, false) when the response doesn't pass
 // format checks.
@@ -203,26 +203,30 @@ func dnsResponsePayload(resp *dns.Message, domain dns.Name) ([]byte, bool) {
 		return nil, true
 	}
 
-	if len(resp.Answer) != 1 {
-		return nil, false
-	}
-	answer := resp.Answer[0]
-
-	_, ok := answer.Name.TrimSuffix(domain)
-	if !ok {
-		// Not the name we are expecting.
+	if len(resp.Answer) == 0 {
 		return nil, false
 	}
 
-	if answer.Type != dns.RRTypeTXT {
-		// We only support TYPE == TXT.
-		return nil, false
+	var records [][]byte
+	for _, answer := range resp.Answer {
+		_, ok := answer.Name.TrimSuffix(domain)
+		if !ok {
+			// Not the name we are expecting.
+			continue
+		}
+
+		if answer.Type != dns.RRTypeAAAA {
+			// We only support TYPE == AAAA.
+			continue
+		}
+		records = append(records, answer.Data)
 	}
-	payload, err := dns.DecodeRDataTXT(answer.Data)
-	if err != nil {
+
+	if len(records) == 0 {
 		return nil, false
 	}
 
+	payload := dns.DecodeRDataAAAA(records)
 	return payload, false
 }
 
@@ -431,7 +435,7 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 		Question: []dns.Question{
 			{
 				Name:  name,
-				Type:  dns.RRTypeTXT,
+				Type:  dns.RRTypeAAAA,
 				Class: dns.ClassIN,
 			},
 		},
