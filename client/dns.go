@@ -305,6 +305,9 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 			if err != nil {
 				break
 			}
+			if len(p) == 0 {
+				continue
+			}
 			any = true
 			c.QueuePacketConn.QueueIncoming(p, addr)
 		}

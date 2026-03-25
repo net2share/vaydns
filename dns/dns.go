@@ -578,33 +578,49 @@ func EncodeRDataTXT(p []byte) []byte {
 }
 
 // EncodeRDataAAAA encodes a slice of bytes as multiple AAAA RDATA entries.
-// Each AAAA record carries up to 16 bytes. The input bytes are split into
-// chunks, with the first byte of each chunk being a sequence number, and
-// the remaining 15 bytes being payload data. The last chunk is padded with
-// zeros if necessary.
+// Each AAAA record carries up to 16 bytes. The first record embeds the total
+// payload length in bytes 1-3, followed by up to 13 data bytes. Subsequent
+// records contain a sequence number and up to 15 data bytes.
 //
 // https://tools.ietf.org/html/rfc3596#section-2.2
 func EncodeRDataAAAA(p []byte) [][]byte {
+	totalLen := len(p)
 	var records [][]byte
+	remaining := p
 	seq := byte(0)
-	for len(p) > 0 {
+	first := true
+	for len(remaining) > 0 {
 		record := make([]byte, 16)
 		record[0] = seq
-		seq++
-		copy(record[1:], p)
-		records = append(records, record)
-		if len(p) < 15 {
-			break
+		if first {
+			binary.BigEndian.PutUint16(record[1:3], uint16(totalLen))
+			dataStart := 3
+			chunkSize := 13
+			if len(remaining) < 13 {
+				chunkSize = len(remaining)
+			}
+			copy(record[dataStart:], remaining[:chunkSize])
+			remaining = remaining[chunkSize:]
+			first = false
+		} else {
+			chunkSize := 15
+			if len(remaining) < 15 {
+				chunkSize = len(remaining)
+			}
+			copy(record[1:], remaining[:chunkSize])
+			remaining = remaining[chunkSize:]
 		}
-		p = p[15:]
+		records = append(records, record)
+		seq++
 	}
 	return records
 }
 
 // DecodeRDataAAAA decodes multiple AAAA RDATA entries into a single byte slice.
 // Each AAAA record is expected to be exactly 16 bytes, with the first byte
-// being a sequence number. Records are sorted by sequence number before
-// concatenation.
+// being a sequence number. The first record contains the total payload length
+// in bytes 1-3. Records are sorted by sequence number before concatenation,
+// and the result is truncated to the embedded length.
 //
 // https://tools.ietf.org/html/rfc3596#section-2.2
 func DecodeRDataAAAA(records [][]byte) []byte {
@@ -627,11 +643,22 @@ func DecodeRDataAAAA(records [][]byte) []byte {
 	}
 	
 	var buf bytes.Buffer
-	for _, record := range sorted {
+	totalLen := int(binary.BigEndian.Uint16(sorted[0][1:3]))
+	for i, record := range sorted {
 		if len(record) < 1 {
 			continue
 		}
-		buf.Write(record[1:])
+		if i == 0 {
+			// First record: data starts at byte 3
+			buf.Write(record[3:])
+		} else {
+			buf.Write(record[1:])
+		}
 	}
-	return buf.Bytes()
+	// Truncate to the embedded total length
+	result := buf.Bytes()
+	if len(result) > totalLen {
+		result = result[:totalLen]
+	}
+	return result
 }
