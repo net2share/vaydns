@@ -338,8 +338,8 @@ func (t *Tunnel) InitiateKCPConn(mtu int) error {
 		maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
 		mtu = DNSNameCapacity(t.TunnelServer.Addr, maxQnameLen, t.TunnelServer.MaxNumLabels) - t.wireConfig.DataOverhead()
 	}
-	if mtu < 50 {
-		return fmt.Errorf("MTU %d is too small (minimum 50)", mtu)
+	if mtu < 25 {
+		return fmt.Errorf("MTU %d is too small (minimum 25)", mtu)
 	}
 	t.TunnelServer.MTU = mtu
 	log.Infof("effective MTU %d", mtu)
@@ -495,8 +495,8 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 
 	maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
 	mtu := DNSNameCapacity(t.TunnelServer.Addr, maxQnameLen, t.TunnelServer.MaxNumLabels) - t.wireConfig.DataOverhead()
-	if mtu < 50 {
-		return fmt.Errorf("MTU %d is too small (minimum 50)", mtu)
+	if mtu < 25 {
+		return fmt.Errorf("MTU %d is too small (minimum 25)", mtu)
 	}
 	log.Infof("effective MTU %d", mtu)
 
