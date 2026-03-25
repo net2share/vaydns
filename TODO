@@ -1,4 +1,4 @@
-In -dot mode, if, after the TLS connection may become disconnected, the
+fIn -dot mode, if, after the TLS connection may become disconnected, the
 redial fails to connect, it results in "operation on closed connection"
 errors and a useless connection up until idleTimeout (2 to 4 minutes
 later), when the stream ends. For example, see
