@@ -590,3 +590,112 @@ func TestRDataTXTRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestNameWireFormatRoundTrip(t *testing.T) {
+	for _, test := range []struct {
+		labels [][]byte
+	}{
+		{[][]byte{}},
+		{[][]byte{[]byte("example"), []byte("com")}},
+		{[][]byte{[]byte("a"), []byte("b"), []byte("c")}},
+		{[][]byte{[]byte("0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789ABCDE")}},
+	} {
+		name, err := NewName(test.labels)
+		if err != nil {
+			t.Fatalf("NewName(%v): %v", test.labels, err)
+		}
+		wire := name.WireFormat()
+		parsed, err := NameFromWireFormat(wire)
+		if err != nil {
+			t.Errorf("NameFromWireFormat(%x): %v", wire, err)
+			continue
+		}
+		if !namesEqual(name, parsed) {
+			t.Errorf("round-trip failed: %v != %v", name, parsed)
+		}
+	}
+}
+
+func TestEncodeDecodeRDataCNAME(t *testing.T) {
+	domain, err := ParseName("t.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, p := range [][]byte{
+		{},
+		{0x01},
+		{0x01, 0x02, 0x03},
+		[]byte("hello world, this is a test of CNAME encoding"),
+		// ~100 bytes
+		bytes.Repeat([]byte{0xab}, 100),
+	} {
+		rdata, err := EncodeRDataCNAME(p, domain)
+		if err != nil {
+			t.Errorf("EncodeRDataCNAME(%x): %v", p, err)
+			continue
+		}
+		decoded, err := DecodeRDataCNAME(rdata, domain)
+		if err != nil {
+			t.Errorf("DecodeRDataCNAME(%x): %v", rdata, err)
+			continue
+		}
+		if !bytes.Equal(decoded, p) {
+			t.Errorf("round-trip failed for %x: got %x", p, decoded)
+		}
+	}
+}
+
+func TestReadRRCNAMECompression(t *testing.T) {
+	// Construct a DNS message with a CNAME answer that uses a compression
+	// pointer. The CNAME target is "www.example.com" where "example.com"
+	// is referenced via a compression pointer to the question name.
+
+	// Question: example.com IN CNAME
+	// Answer: example.com CNAME www.example.com (with compression)
+	msg := []byte{
+		// Header
+		0x00, 0x01, // ID
+		0x81, 0x80, // Flags: QR=1, RD=1, RA=1
+		0x00, 0x01, // QDCOUNT=1
+		0x00, 0x01, // ANCOUNT=1
+		0x00, 0x00, // NSCOUNT=0
+		0x00, 0x00, // ARCOUNT=0
+		// Question: example.com
+		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', // label "example"
+		0x03, 'c', 'o', 'm', // label "com"
+		0x00,       // root
+		0x00, 0x05, // QTYPE=CNAME
+		0x00, 0x01, // QCLASS=IN
+		// Answer: example.com CNAME www.example.com
+		0xc0, 0x0c, // Name: compression pointer to offset 12 (example.com)
+		0x00, 0x05, // TYPE=CNAME
+		0x00, 0x01, // CLASS=IN
+		0x00, 0x00, 0x0e, 0x10, // TTL=3600
+		0x00, 0x06, // RDLENGTH=6
+		// RDATA: www.example.com with compression
+		0x03, 'w', 'w', 'w', // label "www"
+		0xc0, 0x0c, // compression pointer to offset 12 (example.com)
+	}
+
+	parsed, err := MessageFromWireFormat(msg)
+	if err != nil {
+		t.Fatalf("MessageFromWireFormat: %v", err)
+	}
+
+	if len(parsed.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(parsed.Answer))
+	}
+
+	answer := parsed.Answer[0]
+	if answer.Type != RRTypeCNAME {
+		t.Fatalf("expected CNAME type, got %d", answer.Type)
+	}
+
+	// The Data should be the uncompressed wire format of "www.example.com"
+	expected := Name([][]byte{[]byte("www"), []byte("example"), []byte("com")})
+	expectedWire := expected.WireFormat()
+	if !bytes.Equal(answer.Data, expectedWire) {
+		t.Errorf("CNAME RDATA: got %x, want %x", answer.Data, expectedWire)
+	}
+}
