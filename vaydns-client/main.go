@@ -269,6 +269,10 @@ Known TLS fingerprints for -utls are:
 
 	// Apply -dnstt-compat overrides.
 	if compatDnstt {
+		if recordTypeStr == "cname" {
+			fmt.Fprintf(os.Stderr, "-dnstt-compat is not compatible with -record-type cname; dnstt only supports TXT records\n")
+			os.Exit(1)
+		}
 		explicitFlags := make(map[string]bool)
 		flag.Visit(func(f *flag.Flag) {
 			explicitFlags[f.Name] = true

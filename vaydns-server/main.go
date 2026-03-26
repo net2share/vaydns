@@ -1264,6 +1264,10 @@ Example:
 
 		var wireConfig turbotunnel.WireConfig
 		if compatDnstt {
+			if recordType == dns.RRTypeCNAME {
+				fmt.Fprintf(os.Stderr, "-dnstt-compat is not compatible with -record-type cname; dnstt only supports TXT records\n")
+				os.Exit(1)
+			}
 			wireConfig = turbotunnel.WireConfig{ClientIDSize: 8, Compat: true}
 			// Override vaydns defaults with dnstt-compatible values unless
 			// the user explicitly set them.
@@ -1290,6 +1294,16 @@ Example:
 			wireConfig = turbotunnel.WireConfig{ClientIDSize: clientIDSize}
 		}
 		log.Infof("wire config: clientid-size=%d compat=%v", wireConfig.ClientIDSize, wireConfig.Compat)
+
+		if recordType == dns.RRTypeCNAME {
+			explicitFlags := make(map[string]bool)
+			flag.Visit(func(f *flag.Flag) {
+				explicitFlags[f.Name] = true
+			})
+			if explicitFlags["mtu"] {
+				log.Warnf("-mtu has no effect with -record-type cname; CNAME capacity is bounded by the DNS name length limit (255 bytes)")
+			}
+		}
 
 		err = run(privkey, domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive, wireConfig)
 		if err != nil {
