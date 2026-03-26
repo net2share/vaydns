@@ -131,9 +131,14 @@ jobs:
 
       - name: Extract version
         id: version
-        run: echo "VERSION=${TAG#v}" >> "$GITHUB_OUTPUT"
-        env:
-          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          TAG="${{ needs.release-please.outputs.tag_name }}"
+          VERSION="${TAG#v}"
+          if [ -z "$VERSION" ]; then
+            echo "::error::tag_name is empty"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Build and push image
         uses: docker/build-push-action@v6

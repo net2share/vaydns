@@ -91,9 +91,10 @@ jobs:
       - name: Run e2e tests
         run: bash e2e/run-test.sh
 
-  docker:
+  docker-dev:
+    if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
-    needs: [test]
+    needs: [test, e2e]
     permissions:
       contents: read
       packages: write
@@ -117,5 +118,5 @@ jobs:
           context: .
           file: Dockerfile
           push: true
-          tags: ghcr.io/${{ github.repository }}:${{ env.SHORT_SHA }}
+          tags: ghcr.io/${{ github.repository }}:dev-${{ env.SHORT_SHA }}
 
