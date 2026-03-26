@@ -89,6 +89,7 @@ t.MaxStreams = 256
 t.SessionCheckInterval = 20 * time.Second
 t.ReconnectMinDelay = 1 * time.Second
 t.ReconnectMaxDelay = 30 * time.Second
+t.HandshakeTimeout = 15 * time.Second
 ```
 
 Zero values use sensible defaults. See the [README](../README.md) for flag descriptions — each flag maps directly to a struct field.

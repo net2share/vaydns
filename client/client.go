@@ -47,9 +47,10 @@ const (
 	DefaultReconnectDelay       = 1 * time.Second
 	DefaultReconnectMaxDelay    = 30 * time.Second
 	DefaultSessionCheckInterval = 20 * time.Second
-	DefaultUDPResponseTimeout   = 500 * time.Millisecond
-	DefaultUDPWorkers           = 100
-	DefaultMaxStreams            = 256
+	DefaultUDPResponseTimeout    = 500 * time.Millisecond
+	DefaultUDPWorkers            = 100
+	DefaultMaxStreams             = 256
+	DefaultHandshakeTimeout      = 15 * time.Second
 )
 
 // Default timeouts for dnstt compatibility mode.
@@ -199,7 +200,8 @@ type Tunnel struct {
 	MaxStreams            int           // default: 256 (0 = unlimited)
 	ReconnectMinDelay    time.Duration // default: 1s
 	ReconnectMaxDelay    time.Duration // default: 30s
-	SessionCheckInterval time.Duration // default: 500ms
+	SessionCheckInterval time.Duration // default: 20s
+	HandshakeTimeout     time.Duration // default: 30s
 
 	// internal state
 	wireConfig    turbotunnel.WireConfig
@@ -254,6 +256,9 @@ func (t *Tunnel) applyDefaults() {
 	}
 	if t.SessionCheckInterval == 0 {
 		t.SessionCheckInterval = DefaultSessionCheckInterval
+	}
+	if t.HandshakeTimeout == 0 {
+		t.HandshakeTimeout = DefaultHandshakeTimeout
 	}
 }
 
@@ -378,14 +383,29 @@ func (t *Tunnel) InitiateKCPConn(mtu int) error {
 	return nil
 }
 
-// InitiateNoiseChannel performs the Noise protocol handshake.
+// InitiateNoiseChannel performs the Noise protocol handshake with a timeout.
+// The timeout is controlled by HandshakeTimeout (default 30s).
 func (t *Tunnel) InitiateNoiseChannel() error {
-	rw, err := noise.NewClient(t.kcpConn, t.TunnelServer.decodedNoisePubKey)
+	t.applyDefaults()
+	rw, err := noiseHandshake(t.kcpConn, t.TunnelServer.decodedNoisePubKey, t.HandshakeTimeout)
 	if err != nil {
-		return fmt.Errorf("noise handshake: %v", err)
+		return err
 	}
 	t.noiseChannel = rw
 	return nil
+}
+
+// noiseHandshake performs the Noise handshake on conn with a deadline.
+// It sets a deadline before the handshake and clears it after, so the
+// deadline does not affect subsequent reads/writes on the connection.
+func noiseHandshake(conn *kcp.UDPSession, pubkey []byte, timeout time.Duration) (io.ReadWriteCloser, error) {
+	conn.SetDeadline(time.Now().Add(timeout))
+	rw, err := noise.NewClient(conn, pubkey)
+	conn.SetDeadline(time.Time{}) // clear deadline
+	if err != nil {
+		return nil, fmt.Errorf("noise handshake: %v", err)
+	}
+	return rw, nil
 }
 
 // InitiateSmuxSession establishes a multiplexed session over the Noise channel.
@@ -627,10 +647,10 @@ func (t *Tunnel) createSession(mtu int) (*kcp.UDPSession, *smux.Session, error) 
 		return nil, nil, fmt.Errorf("failed to set KCP MTU to %d", mtu)
 	}
 
-	rw, err := noise.NewClient(conn, t.TunnelServer.decodedNoisePubKey)
+	rw, err := noiseHandshake(conn, t.TunnelServer.decodedNoisePubKey, t.HandshakeTimeout)
 	if err != nil {
 		conn.Close()
-		return nil, nil, fmt.Errorf("noise handshake: %v", err)
+		return nil, nil, err
 	}
 
 	smuxConfig := smux.DefaultConfig()
