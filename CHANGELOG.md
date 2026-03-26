@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/net2share/vaydns/compare/v0.2.1...v0.2.2) (2026-03-26)
+
+
+### Bug Fixes
+
+* clarify -udp-shared-socket and -udp-accept-errors behavior ([b0299b6](https://github.com/net2share/vaydns/commit/b0299b620ba379324fdddc4126bb70d19e15924a))
+
 ## [0.2.1](https://github.com/net2share/vaydns/compare/v0.2.0...v0.2.1) (2026-03-26)
 
 
