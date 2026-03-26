@@ -3,6 +3,7 @@ package dns
 
 import (
 	"bytes"
+	"encoding/base32"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -45,6 +46,8 @@ var (
 )
 
 const (
+	// https://tools.ietf.org/html/rfc1035#section-3.3.1
+	RRTypeCNAME = 5
 	// https://tools.ietf.org/html/rfc1035#section-3.2.2
 	RRTypeTXT = 16
 	// https://tools.ietf.org/html/rfc6891#section-6.1.1
@@ -149,6 +152,44 @@ func (name Name) TrimSuffix(suffix Name) (Name, bool) {
 		}
 	}
 	return fore, true
+}
+
+// WireFormat serializes a Name to uncompressed DNS wire format: a sequence of
+// length-prefixed labels followed by a zero-length root label.
+func (name Name) WireFormat() []byte {
+	var buf bytes.Buffer
+	for _, label := range name {
+		buf.WriteByte(byte(len(label)))
+		buf.Write(label)
+	}
+	buf.WriteByte(0)
+	return buf.Bytes()
+}
+
+// NameFromWireFormat parses an uncompressed DNS name from raw bytes. It does not
+// handle compression pointers.
+func NameFromWireFormat(data []byte) (Name, error) {
+	var labels [][]byte
+	i := 0
+	for {
+		if i >= len(data) {
+			return nil, io.ErrUnexpectedEOF
+		}
+		length := int(data[i])
+		i++
+		if length == 0 {
+			break
+		}
+		if length > 63 {
+			return nil, ErrLabelTooLong
+		}
+		if i+length > len(data) {
+			return nil, io.ErrUnexpectedEOF
+		}
+		labels = append(labels, data[i:i+length])
+		i += length
+	}
+	return Name(labels), nil
 }
 
 // Message represents a DNS message.
@@ -323,10 +364,30 @@ func readRR(r io.ReadSeeker) (RR, error) {
 	if err != nil {
 		return rr, err
 	}
-	rr.Data = make([]byte, rdLength)
-	_, err = io.ReadFull(r, rr.Data)
-	if err != nil {
-		return rr, err
+	if rr.Type == RRTypeCNAME {
+		// CNAME RDATA is a domain name that may contain compression
+		// pointers. Parse it with readName (which follows pointers),
+		// then store the uncompressed wire format in rr.Data.
+		startPos, err := r.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return rr, err
+		}
+		name, err := readName(r)
+		if err != nil {
+			return rr, err
+		}
+		rr.Data = name.WireFormat()
+		// Ensure reader is positioned past the RDATA.
+		_, err = r.Seek(startPos+int64(rdLength), io.SeekStart)
+		if err != nil {
+			return rr, err
+		}
+	} else {
+		rr.Data = make([]byte, rdLength)
+		_, err = io.ReadFull(r, rr.Data)
+		if err != nil {
+			return rr, err
+		}
 	}
 
 	return rr, nil
@@ -573,4 +634,57 @@ func EncodeRDataTXT(p []byte) []byte {
 	buf.WriteByte(byte(len(p)))
 	buf.Write(p)
 	return buf.Bytes()
+}
+
+// base32Encoding is a base32 encoding without padding, used for CNAME RDATA.
+var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
+
+// EncodeRDataCNAME encodes a payload as CNAME RDATA by base32-encoding the
+// payload into DNS name labels and appending the tunnel domain. The result is
+// an uncompressed wire-format domain name suitable for use as RR.Data.
+//
+// https://tools.ietf.org/html/rfc1035#section-3.3.1
+func EncodeRDataCNAME(p []byte, domain Name) ([]byte, error) {
+	const labelLen = 63
+
+	encoded := make([]byte, base32Encoding.EncodedLen(len(p)))
+	base32Encoding.Encode(encoded, p)
+	encoded = bytes.ToLower(encoded)
+
+	var labels [][]byte
+	for len(encoded) > labelLen {
+		labels = append(labels, encoded[:labelLen])
+		encoded = encoded[labelLen:]
+	}
+	if len(encoded) > 0 {
+		labels = append(labels, encoded)
+	}
+	labels = append(labels, domain...)
+
+	name, err := NewName(labels)
+	if err != nil {
+		return nil, err
+	}
+	return name.WireFormat(), nil
+}
+
+// DecodeRDataCNAME decodes CNAME RDATA (uncompressed wire-format domain name)
+// back to the original payload. It strips the tunnel domain suffix, joins the
+// remaining labels, and base32-decodes them.
+func DecodeRDataCNAME(data []byte, domain Name) ([]byte, error) {
+	name, err := NameFromWireFormat(data)
+	if err != nil {
+		return nil, err
+	}
+	prefix, ok := name.TrimSuffix(domain)
+	if !ok {
+		return nil, fmt.Errorf("CNAME target does not end with domain %s", domain)
+	}
+	joined := bytes.ToUpper(bytes.Join(prefix, nil))
+	payload := make([]byte, base32Encoding.DecodedLen(len(joined)))
+	n, err := base32Encoding.Decode(payload, joined)
+	if err != nil {
+		return nil, err
+	}
+	return payload[:n], nil
 }

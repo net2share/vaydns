@@ -142,6 +142,8 @@ type DNSPacketConn struct {
 	clientID   turbotunnel.ClientID
 	wireConfig turbotunnel.WireConfig
 	domain     dns.Name
+	// rrType is the DNS record type used for downstream data (RRTypeTXT or RRTypeCNAME).
+	rrType uint16
 	// Sending on pollChan permits sendLoop to send an empty polling query.
 	// sendLoop also does its own polling according to a time schedule.
 	pollChan chan struct{}
@@ -169,7 +171,7 @@ type DNSPacketConn struct {
 // maxNumLabels is the max number of data labels (0 = unlimited).
 // forgedStats is shared with the transport layer (e.g. UDPPacketConn) for
 // consistent forged response tracking; if nil, a new instance is created.
-func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats) *DNSPacketConn {
+func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16) *DNSPacketConn {
 	if maxQnameLen <= 0 || maxQnameLen > 253 {
 		maxQnameLen = 253
 	}
@@ -178,10 +180,14 @@ func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 	}
 	// Generate a new random ClientID.
 	clientID := turbotunnel.NewClientID(wireConfig.ClientIDSize)
+	if rrType == 0 {
+		rrType = dns.RRTypeTXT
+	}
 	c := &DNSPacketConn{
 		clientID:        clientID,
 		wireConfig:      wireConfig,
 		domain:          domain,
+		rrType:          rrType,
 		pollChan:        make(chan struct{}, pollLimit),
 		rateLimiter:     rateLimiter,
 		maxQnameLen:     maxQnameLen,
@@ -220,11 +226,11 @@ func (c *DNSPacketConn) TransportErrors() <-chan error {
 }
 
 // dnsResponsePayload extracts the downstream payload of a DNS response, encoded
-// into the RDATA of a TXT RR. It returns (nil, true) when the response has a
-// non-NoError RCODE, indicating a forged or hijacked response. It returns
+// into the RDATA of a TXT or CNAME RR. It returns (nil, true) when the response
+// has a non-NoError RCODE, indicating a forged or hijacked response. It returns
 // (payload, false) on success or (nil, false) when the response doesn't pass
 // format checks.
-func dnsResponsePayload(resp *dns.Message, domain dns.Name) ([]byte, bool) {
+func dnsResponsePayload(resp *dns.Message, domain dns.Name, rrType uint16) ([]byte, bool) {
 	if resp.Flags&0x8000 != 0x8000 {
 		// QR != 1, this is not a response.
 		return nil, false
@@ -245,11 +251,18 @@ func dnsResponsePayload(resp *dns.Message, domain dns.Name) ([]byte, bool) {
 		return nil, false
 	}
 
-	if answer.Type != dns.RRTypeTXT {
-		// We only support TYPE == TXT.
+	if answer.Type != rrType {
 		return nil, false
 	}
-	payload, err := dns.DecodeRDataTXT(answer.Data)
+
+	var payload []byte
+	var err error
+	switch rrType {
+	case dns.RRTypeCNAME:
+		payload, err = dns.DecodeRDataCNAME(answer.Data, domain)
+	default:
+		payload, err = dns.DecodeRDataTXT(answer.Data)
+	}
 	if err != nil {
 		return nil, false
 	}
@@ -302,7 +315,7 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 			continue
 		}
 
-		payload, isForged := dnsResponsePayload(&resp, c.domain)
+		payload, isForged := dnsResponsePayload(&resp, c.domain, c.rrType)
 		if isForged {
 			c.forgedStats.Record(resp.Flags & 0x000f)
 			continue
@@ -446,7 +459,7 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 		Question: []dns.Question{
 			{
 				Name:  name,
-				Type:  dns.RRTypeTXT,
+				Type:  c.rrType,
 				Class: dns.ClassIN,
 			},
 		},
