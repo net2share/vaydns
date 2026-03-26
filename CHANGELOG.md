@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.4](https://github.com/net2share/vaydns/compare/v0.2.3...v0.2.4) (2026-03-26)
+
+
+### Features
+
+* support multiple DNS record types for tunnel data ([#37](https://github.com/net2share/vaydns/issues/37)) ([efdc838](https://github.com/net2share/vaydns/commit/efdc8387a1243c5a7f821ffe6ca6899afda2236a))
+
+
+### Bug Fixes
+
+* improve connection recovery in censored networks ([#38](https://github.com/net2share/vaydns/issues/38)) ([5a2c442](https://github.com/net2share/vaydns/commit/5a2c442549f9ec542aac2544e1bfb4dd3c013ace))
+* lower KCP MTU minimum from 50 to 25 ([3cbb488](https://github.com/net2share/vaydns/commit/3cbb488d02f25920f2176b74279971273363f487))
+
 ## [0.2.3](https://github.com/net2share/vaydns/compare/v0.2.2...v0.2.3) (2026-03-26)
 
 
