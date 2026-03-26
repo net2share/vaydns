@@ -58,7 +58,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -113,9 +112,6 @@ var (
 	// of 1232. Cloudflare's was 1452, and Google's was 4096.
 	maxUDPPayload = 1280 - 40 - 8
 
-	// recordType is the DNS record type used for downstream data encoding.
-	// Set from the -record-type command-line flag.
-	recordType uint16 = dns.RRTypeTXT
 )
 
 // base32Encoding is a base32 encoding without padding.
@@ -496,13 +492,14 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 		return resp, nil
 	}
 
-	if question.Type != recordType {
-		// We only support the configured QTYPE.
+	switch question.Type {
+	case dns.RRTypeTXT, dns.RRTypeCNAME, dns.RRTypeNS, dns.RRTypeMX, dns.RRTypeSRV, dns.RRTypeA, dns.RRTypeAAAA:
+		// Supported tunnel QTYPE.
+	default:
 		resp.Flags |= dns.RcodeNameError
 		// No log message here; it's common for recursive resolvers to
-		// send NS or A queries when the client only asked for a TXT. I
-		// suspect this is related to QNAME minimization, but I'm not
-		// sure. https://tools.ietf.org/html/rfc7816
+		// send extra queries due to QNAME minimization.
+		// https://tools.ietf.org/html/rfc7816
 		return resp, nil
 	}
 
@@ -954,7 +951,7 @@ func computeMaxEncodedPayload(limit int) int {
 		Question: []dns.Question{
 			{
 				Name:  maxLengthName,
-				Type:  recordType,
+				Type:  dns.RRTypeTXT,
 				Class: dns.ClassIN,
 			},
 		},
@@ -1022,7 +1019,7 @@ func computeMaxEncodedPayloadNameBased(domain dns.Name, headerOverhead int) int 
 // computeMaxEncodedPayloadMultiRR computes the maximum raw payload bytes that
 // can fit in multiple fixed-size RRs (A=4 bytes, AAAA=16 bytes) within a DNS
 // response of at most limit bytes. Uses binary search like the TXT computation.
-func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int) int {
+func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int, rrType uint16) int {
 	maxLengthName, err := dns.NewName([][]byte{
 		[]byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
 		[]byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
@@ -1041,7 +1038,7 @@ func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int) int {
 		Question: []dns.Question{
 			{
 				Name:  maxLengthName,
-				Type:  recordType,
+				Type:  rrType,
 				Class: dns.ClassIN,
 			},
 		},
@@ -1100,20 +1097,21 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	// global maximum which no packet will exceed. We choose that maximum to
 	// keep the UDP payload size under maxUDPPayload, even in the worst case
 	// of a maximum-length name in the query's Question section.
-	var maxEncodedPayload int
-	switch recordType {
-	case dns.RRTypeCNAME, dns.RRTypeNS:
-		maxEncodedPayload = computeMaxEncodedPayloadNameBased(domain, 0)
-	case dns.RRTypeMX:
-		maxEncodedPayload = computeMaxEncodedPayloadNameBased(domain, 2)
-	case dns.RRTypeSRV:
-		maxEncodedPayload = computeMaxEncodedPayloadNameBased(domain, 6)
-	case dns.RRTypeA:
-		maxEncodedPayload = computeMaxEncodedPayloadMultiRR(maxUDPPayload, 4)
-	case dns.RRTypeAAAA:
-		maxEncodedPayload = computeMaxEncodedPayloadMultiRR(maxUDPPayload, 16)
-	default:
-		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload)
+	// Since the server accepts all record types, the MTU must fit the
+	// smallest capacity across all supported types.
+	capacities := []int{
+		computeMaxEncodedPayload(maxUDPPayload),                // TXT
+		computeMaxEncodedPayloadNameBased(domain, 0),           // CNAME, NS
+		computeMaxEncodedPayloadNameBased(domain, 2),           // MX
+		computeMaxEncodedPayloadNameBased(domain, 6),           // SRV
+		computeMaxEncodedPayloadMultiRR(maxUDPPayload, 4, dns.RRTypeA),    // A
+		computeMaxEncodedPayloadMultiRR(maxUDPPayload, 16, dns.RRTypeAAAA), // AAAA
+	}
+	maxEncodedPayload := capacities[0]
+	for _, c := range capacities[1:] {
+		if c < maxEncodedPayload {
+			maxEncodedPayload = c
+		}
 	}
 	// 2 bytes accounts for a packet length prefix.
 	mtu := maxEncodedPayload - 2
@@ -1183,7 +1181,6 @@ func main() {
 	var keepAliveStr string
 	var compatDnstt bool
 	var clientIDSize int
-	var recordTypeStr string
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -1216,7 +1213,6 @@ Example:
 	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 500ms); must be less than idle-timeout")
 	flag.BoolVar(&compatDnstt, "dnstt-compat", false, "use original dnstt wire format (8-byte ClientID, padding prefixes)")
 	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes (ignored when -dnstt-compat is set)")
-	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -1229,26 +1225,6 @@ Example:
 	}
 	log.SetLevel(level)
 	log.SetFormatter(&log.TextFormatter{FullTimestamp: true, TimestampFormat: "2006-01-02 15:04:05"})
-
-	switch strings.ToLower(recordTypeStr) {
-	case "txt":
-		recordType = dns.RRTypeTXT
-	case "cname":
-		recordType = dns.RRTypeCNAME
-	case "a":
-		recordType = dns.RRTypeA
-	case "aaaa":
-		recordType = dns.RRTypeAAAA
-	case "mx":
-		recordType = dns.RRTypeMX
-	case "ns":
-		recordType = dns.RRTypeNS
-	case "srv":
-		recordType = dns.RRTypeSRV
-	default:
-		fmt.Fprintf(os.Stderr, "invalid -record-type %q: must be one of: txt, cname, a, aaaa, mx, ns, srv\n", recordTypeStr)
-		os.Exit(1)
-	}
 
 	if genKey {
 		// -gen-key mode.
@@ -1381,10 +1357,6 @@ Example:
 
 		var wireConfig turbotunnel.WireConfig
 		if compatDnstt {
-			if recordType != dns.RRTypeTXT {
-				fmt.Fprintf(os.Stderr, "-dnstt-compat is not compatible with -record-type %s; dnstt only supports TXT records\n", recordTypeStr)
-				os.Exit(1)
-			}
 			wireConfig = turbotunnel.WireConfig{ClientIDSize: 8, Compat: true}
 			// Override vaydns defaults with dnstt-compatible values unless
 			// the user explicitly set them.
@@ -1411,16 +1383,6 @@ Example:
 			wireConfig = turbotunnel.WireConfig{ClientIDSize: clientIDSize}
 		}
 		log.Infof("wire config: clientid-size=%d compat=%v", wireConfig.ClientIDSize, wireConfig.Compat)
-
-		if recordType == dns.RRTypeCNAME || recordType == dns.RRTypeNS || recordType == dns.RRTypeMX || recordType == dns.RRTypeSRV {
-			explicitFlags := make(map[string]bool)
-			flag.Visit(func(f *flag.Flag) {
-				explicitFlags[f.Name] = true
-			})
-			if explicitFlags["mtu"] {
-				log.Warnf("-mtu has no effect with -record-type %s; capacity is bounded by the DNS name length limit (255 bytes)", recordTypeStr)
-			}
-		}
 
 		err = run(privkey, domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive, wireConfig)
 		if err != nil {
