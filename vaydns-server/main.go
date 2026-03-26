@@ -111,6 +111,7 @@ var (
 	// On 2020-04-19, the Quad9 resolver was seen to have a UDP payload size
 	// of 1232. Cloudflare's was 1452, and Google's was 4096.
 	maxUDPPayload = 1280 - 40 - 8
+
 )
 
 // base32Encoding is a base32 encoding without padding.
@@ -491,14 +492,14 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 		return resp, nil
 	}
 
-	if question.Type != dns.RRTypeTXT {
-		// We only support QTYPE == TXT.
+	switch question.Type {
+	case dns.RRTypeTXT, dns.RRTypeCNAME, dns.RRTypeNS, dns.RRTypeMX, dns.RRTypeSRV, dns.RRTypeA, dns.RRTypeAAAA:
+		// Supported tunnel QTYPE.
+	default:
 		resp.Flags |= dns.RcodeNameError
 		// No log message here; it's common for recursive resolvers to
-		// send NS or A queries when the client only asked for a TXT. I
-		// suspect this is related to QNAME minimization, but I'm not
-		// sure. https://tools.ietf.org/html/rfc7816
-		// log.Printf("NXDOMAIN: QTYPE %d != TXT", question.Type)
+		// send extra queries due to QNAME minimization.
+		// https://tools.ietf.org/html/rfc7816
 		return resp, nil
 	}
 
@@ -742,7 +743,7 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 // response, it sends on the network immediately. Those that represent a
 // response capable of carrying data, it packs full of as many packets as will
 // fit while keeping the total size under maxEncodedPayload, then sends it.
-func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int) error {
+func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int, domain dns.Name) error {
 	var nextRec *record
 	for {
 		rec := nextRec
@@ -835,7 +836,49 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			}
 			timer.Stop()
 
-			rec.Resp.Answer[0].Data = dns.EncodeRDataTXT(payload.Bytes())
+			switch rec.Resp.Question[0].Type {
+			case dns.RRTypeA, dns.RRTypeAAAA:
+				// A/AAAA: split payload into multiple answer RRs.
+				var chunks [][]byte
+				if rec.Resp.Question[0].Type == dns.RRTypeA {
+					chunks = dns.EncodeRDataA(payload.Bytes())
+				} else {
+					chunks = dns.EncodeRDataAAAA(payload.Bytes())
+				}
+				rec.Resp.Answer = make([]dns.RR, len(chunks))
+				for i, chunk := range chunks {
+					rec.Resp.Answer[i] = dns.RR{
+						Name:  rec.Resp.Question[0].Name,
+						Type:  rec.Resp.Question[0].Type,
+						Class: rec.Resp.Question[0].Class,
+						TTL:   responseTTL,
+						Data:  chunk,
+					}
+				}
+			case dns.RRTypeCNAME, dns.RRTypeNS:
+				data, err := dns.EncodeRDataCNAME(payload.Bytes(), domain)
+				if err != nil {
+					log.Errorf("EncodeRData: %v", err)
+					continue
+				}
+				rec.Resp.Answer[0].Data = data
+			case dns.RRTypeMX:
+				data, err := dns.EncodeRDataMX(payload.Bytes(), domain)
+				if err != nil {
+					log.Errorf("EncodeRDataMX: %v", err)
+					continue
+				}
+				rec.Resp.Answer[0].Data = data
+			case dns.RRTypeSRV:
+				data, err := dns.EncodeRDataSRV(payload.Bytes(), domain)
+				if err != nil {
+					log.Errorf("EncodeRDataSRV: %v", err)
+					continue
+				}
+				rec.Resp.Answer[0].Data = data
+			default:
+				rec.Resp.Answer[0].Data = dns.EncodeRDataTXT(payload.Bytes())
+			}
 		}
 
 		buf, err := rec.Resp.WireFormat()
@@ -909,7 +952,7 @@ func computeMaxEncodedPayload(limit int) int {
 			{
 				Name:  maxLengthName,
 				Type:  dns.RRTypeTXT,
-				Class: dns.RRTypeTXT,
+				Class: dns.ClassIN,
 			},
 		},
 		// EDNS(0)
@@ -956,6 +999,92 @@ func computeMaxEncodedPayload(limit int) int {
 	return low
 }
 
+// computeMaxEncodedPayloadNameBased computes the maximum raw payload bytes that
+// can fit in a name-based RDATA (CNAME, NS, MX, SRV). headerOverhead is the
+// number of fixed bytes before the domain name in the RDATA (0 for CNAME/NS,
+// 2 for MX, 6 for SRV).
+func computeMaxEncodedPayloadNameBased(domain dns.Name, headerOverhead int) int {
+	domainWireLen := 1 // null terminator
+	for _, label := range domain {
+		domainWireLen += 1 + len(label)
+	}
+	available := 255 - domainWireLen
+	if available <= 0 {
+		return 0
+	}
+	encodedBytes := available * 63 / 64
+	return encodedBytes * 5 / 8
+}
+
+// computeMaxEncodedPayloadMultiRR computes the maximum raw payload bytes that
+// can fit in multiple fixed-size RRs (A=4 bytes, AAAA=16 bytes) within a DNS
+// response of at most limit bytes. Uses binary search like the TXT computation.
+func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int, rrType uint16) int {
+	maxLengthName, err := dns.NewName([][]byte{
+		[]byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+		[]byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+		[]byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+		[]byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"),
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	queryLimit := uint16(limit)
+	if int(queryLimit) != limit {
+		queryLimit = 0xffff
+	}
+	query := &dns.Message{
+		Question: []dns.Question{
+			{
+				Name:  maxLengthName,
+				Type:  rrType,
+				Class: dns.ClassIN,
+			},
+		},
+		Additional: []dns.RR{
+			{
+				Name:  dns.Name{},
+				Type:  dns.RRTypeOPT,
+				Class: queryLimit,
+				TTL:   0,
+				Data:  []byte{},
+			},
+		},
+	}
+	resp, _ := responseFor(query, dns.Name([][]byte{}))
+
+	// Binary search: find max payload that fits when split into chunkSize RRs.
+	low := 0
+	high := 32768
+	for low+1 < high {
+		mid := (low + high) / 2
+		// Simulate encoding: 2-byte length prefix + payload → ceil((2+mid)/chunkSize) RRs.
+		totalBytes := 2 + mid
+		numChunks := (totalBytes + chunkSize - 1) / chunkSize
+		resp.Answer = make([]dns.RR, numChunks)
+		for i := range numChunks {
+			resp.Answer[i] = dns.RR{
+				Name:  query.Question[0].Name,
+				Type:  query.Question[0].Type,
+				Class: query.Question[0].Class,
+				TTL:   responseTTL,
+				Data:  make([]byte, chunkSize),
+			}
+		}
+		buf, err := resp.WireFormat()
+		if err != nil {
+			panic(err)
+		}
+		if len(buf) <= limit {
+			low = mid
+		} else {
+			high = mid
+		}
+	}
+	return low
+}
+
 func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration, wireConfig turbotunnel.WireConfig) error {
 	defer dnsConn.Close()
 
@@ -968,7 +1097,22 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	// global maximum which no packet will exceed. We choose that maximum to
 	// keep the UDP payload size under maxUDPPayload, even in the worst case
 	// of a maximum-length name in the query's Question section.
-	maxEncodedPayload := computeMaxEncodedPayload(maxUDPPayload)
+	// Since the server accepts all record types, the MTU must fit the
+	// smallest capacity across all supported types.
+	capacities := []int{
+		computeMaxEncodedPayload(maxUDPPayload),                // TXT
+		computeMaxEncodedPayloadNameBased(domain, 0),           // CNAME, NS
+		computeMaxEncodedPayloadNameBased(domain, 2),           // MX
+		computeMaxEncodedPayloadNameBased(domain, 6),           // SRV
+		computeMaxEncodedPayloadMultiRR(maxUDPPayload, 4, dns.RRTypeA),    // A
+		computeMaxEncodedPayloadMultiRR(maxUDPPayload, 16, dns.RRTypeAAAA), // AAAA
+	}
+	maxEncodedPayload := capacities[0]
+	for _, c := range capacities[1:] {
+		if c < maxEncodedPayload {
+			maxEncodedPayload = c
+		}
+	}
 	// 2 bytes accounts for a packet length prefix.
 	mtu := maxEncodedPayload - 2
 	if mtu < 80 {
@@ -1015,7 +1159,7 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	// for each response to collect downstream data before being evicted by
 	// another response that needs to be sent.
 	go func() {
-		err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload)
+		err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload, domain)
 		if err != nil {
 			log.Warnf("sendLoop: %v", err)
 		}

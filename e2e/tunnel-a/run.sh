@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test: Simple tunnel — client fetches nginx page through DNS tunnel
+# Test: A record tunnel — client fetches nginx page through DNS tunnel using A records
 set -euo pipefail
 cd "$(dirname "$0")"
 
