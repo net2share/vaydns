@@ -6,7 +6,7 @@ cd "$(dirname "$0")"
 failed=0
 total=0
 
-for test_dir in tunnel socks-download recovery; do
+for test_dir in tunnel-txt tunnel-cname socks-download recovery; do
     total=$((total + 1))
     echo ""
     echo "========================================"

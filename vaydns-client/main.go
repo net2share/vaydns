@@ -52,6 +52,7 @@ func main() {
 	var udpAcceptErrors bool
 	var compatDnstt bool
 	var clientIDSize int
+	var recordTypeStr string
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -111,6 +112,7 @@ Known TLS fingerprints for -utls are:
 	flag.BoolVar(&udpAcceptErrors, "udp-accept-errors", false, "accept DNS error responses instead of filtering them (disables censorship evasion)")
 	flag.BoolVar(&compatDnstt, "dnstt-compat", false, "use original dnstt wire format (8-byte ClientID, padding prefixes)")
 	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes (ignored when -dnstt-compat is set)")
+	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt or cname)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -138,6 +140,15 @@ Known TLS fingerprints for -utls are:
 		os.Exit(1)
 	}
 	log.Infof("using domain: %s", domainArg)
+
+	switch strings.ToLower(recordTypeStr) {
+	case "txt", "cname":
+		recordTypeStr = strings.ToLower(recordTypeStr)
+	default:
+		fmt.Fprintf(os.Stderr, "invalid -record-type %q: must be \"txt\" or \"cname\"\n", recordTypeStr)
+		os.Exit(1)
+	}
+	log.Infof("record type: %s", recordTypeStr)
 
 	// Resolve public key.
 	var pubkeyHex string
@@ -308,6 +319,7 @@ Known TLS fingerprints for -utls are:
 	ts.MaxQnameLen = maxQnameLen
 	ts.MaxNumLabels = maxNumLabels
 	ts.RPS = rpsLimit
+	ts.RecordType = recordTypeStr
 
 	// Build tunnel.
 	tunnel, err := client.NewTunnel(resolver, ts)

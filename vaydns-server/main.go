@@ -58,6 +58,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -111,6 +112,10 @@ var (
 	// On 2020-04-19, the Quad9 resolver was seen to have a UDP payload size
 	// of 1232. Cloudflare's was 1452, and Google's was 4096.
 	maxUDPPayload = 1280 - 40 - 8
+
+	// recordType is the DNS record type used for downstream data encoding.
+	// Set from the -record-type command-line flag.
+	recordType uint16 = dns.RRTypeTXT
 )
 
 // base32Encoding is a base32 encoding without padding.
@@ -491,14 +496,13 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 		return resp, nil
 	}
 
-	if question.Type != dns.RRTypeTXT {
-		// We only support QTYPE == TXT.
+	if question.Type != recordType {
+		// We only support the configured QTYPE (TXT or CNAME).
 		resp.Flags |= dns.RcodeNameError
 		// No log message here; it's common for recursive resolvers to
 		// send NS or A queries when the client only asked for a TXT. I
 		// suspect this is related to QNAME minimization, but I'm not
 		// sure. https://tools.ietf.org/html/rfc7816
-		// log.Printf("NXDOMAIN: QTYPE %d != TXT", question.Type)
 		return resp, nil
 	}
 
@@ -742,7 +746,7 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 // response, it sends on the network immediately. Those that represent a
 // response capable of carrying data, it packs full of as many packets as will
 // fit while keeping the total size under maxEncodedPayload, then sends it.
-func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int) error {
+func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int, domain dns.Name) error {
 	var nextRec *record
 	for {
 		rec := nextRec
@@ -835,7 +839,16 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			}
 			timer.Stop()
 
-			rec.Resp.Answer[0].Data = dns.EncodeRDataTXT(payload.Bytes())
+			if rec.Resp.Question[0].Type == dns.RRTypeCNAME {
+				data, err := dns.EncodeRDataCNAME(payload.Bytes(), domain)
+				if err != nil {
+					log.Errorf("EncodeRDataCNAME: %v", err)
+					continue
+				}
+				rec.Resp.Answer[0].Data = data
+			} else {
+				rec.Resp.Answer[0].Data = dns.EncodeRDataTXT(payload.Bytes())
+			}
 		}
 
 		buf, err := rec.Resp.WireFormat()
@@ -908,8 +921,8 @@ func computeMaxEncodedPayload(limit int) int {
 		Question: []dns.Question{
 			{
 				Name:  maxLengthName,
-				Type:  dns.RRTypeTXT,
-				Class: dns.RRTypeTXT,
+				Type:  recordType,
+				Class: dns.ClassIN,
 			},
 		},
 		// EDNS(0)
@@ -956,6 +969,27 @@ func computeMaxEncodedPayload(limit int) int {
 	return low
 }
 
+// computeMaxEncodedPayloadCNAME computes the maximum raw payload bytes that can
+// fit in a CNAME RDATA domain name, given the tunnel domain. CNAME RDATA is a
+// single DNS name (max 255 wire bytes). The payload is base32-encoded and split
+// into labels.
+func computeMaxEncodedPayloadCNAME(domain dns.Name) int {
+	// Calculate domain wire length.
+	domainWireLen := 1 // null terminator
+	for _, label := range domain {
+		domainWireLen += 1 + len(label)
+	}
+	available := 255 - domainWireLen
+	if available <= 0 {
+		return 0
+	}
+	// Each label uses 1 length byte + up to 63 content bytes.
+	// Number of full labels that fit.
+	encodedBytes := available * 63 / 64
+	// Base32 decode: 8 encoded chars → 5 raw bytes.
+	return encodedBytes * 5 / 8
+}
+
 func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration, wireConfig turbotunnel.WireConfig) error {
 	defer dnsConn.Close()
 
@@ -968,7 +1002,12 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	// global maximum which no packet will exceed. We choose that maximum to
 	// keep the UDP payload size under maxUDPPayload, even in the worst case
 	// of a maximum-length name in the query's Question section.
-	maxEncodedPayload := computeMaxEncodedPayload(maxUDPPayload)
+	var maxEncodedPayload int
+	if recordType == dns.RRTypeCNAME {
+		maxEncodedPayload = computeMaxEncodedPayloadCNAME(domain)
+	} else {
+		maxEncodedPayload = computeMaxEncodedPayload(maxUDPPayload)
+	}
 	// 2 bytes accounts for a packet length prefix.
 	mtu := maxEncodedPayload - 2
 	if mtu < 80 {
@@ -1015,7 +1054,7 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	// for each response to collect downstream data before being evicted by
 	// another response that needs to be sent.
 	go func() {
-		err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload)
+		err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload, domain)
 		if err != nil {
 			log.Warnf("sendLoop: %v", err)
 		}
@@ -1037,6 +1076,7 @@ func main() {
 	var keepAliveStr string
 	var compatDnstt bool
 	var clientIDSize int
+	var recordTypeStr string
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -1069,6 +1109,7 @@ Example:
 	flag.StringVar(&keepAliveStr, "keepalive", defaultKeepAlive.String(), "keepalive ping interval (e.g. 2s, 500ms); must be less than idle-timeout")
 	flag.BoolVar(&compatDnstt, "dnstt-compat", false, "use original dnstt wire format (8-byte ClientID, padding prefixes)")
 	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes (ignored when -dnstt-compat is set)")
+	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt or cname)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "warning", "log level (debug, info, warning, error)")
@@ -1081,6 +1122,16 @@ Example:
 	}
 	log.SetLevel(level)
 	log.SetFormatter(&log.TextFormatter{FullTimestamp: true, TimestampFormat: "2006-01-02 15:04:05"})
+
+	switch strings.ToLower(recordTypeStr) {
+	case "txt":
+		recordType = dns.RRTypeTXT
+	case "cname":
+		recordType = dns.RRTypeCNAME
+	default:
+		fmt.Fprintf(os.Stderr, "invalid -record-type %q: must be \"txt\" or \"cname\"\n", recordTypeStr)
+		os.Exit(1)
+	}
 
 	if genKey {
 		// -gen-key mode.
