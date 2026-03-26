@@ -44,7 +44,7 @@ services:
       - keys:/keys
     command: >
       vaydns-server -udp :53 -privkey-file /keys/server.key
-      -domain t.example.com -upstream backend:80
+      -domain t.example.com -upstream backend:80 -record-type ns
     depends_on:
       keygen:
         condition: service_completed_successfully
