@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.1](https://github.com/net2share/vaydns/compare/v0.2.0...v0.2.1) (2026-03-26)
+
+
+### Features
+
+* tune default timeouts for censored networks ([579b45c](https://github.com/net2share/vaydns/commit/579b45c27b584ad8e04d820be927288a1dcce148))
+
+
+### Bug Fixes
+
+* improve MTU too small error message with actionable hints ([051ad56](https://github.com/net2share/vaydns/commit/051ad56f7fc7e1837664a797aba4b00787275cc9))
+* reset UDP deadline after forged responses and unify forged logging ([cb63edb](https://github.com/net2share/vaydns/commit/cb63edb24d26ffc53665a93071b03d36d8ae2825))
+
 ## [0.2.0](https://github.com/net2share/vaydns/compare/v0.1.2...v0.2.0) (2026-03-22)
 
 
