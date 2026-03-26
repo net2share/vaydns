@@ -1,8 +1,8 @@
 // Package client provides a reusable DNS tunnel client library.
 //
-// The API is compatible with github.com/mahsanet/dnstt/client, with additional
-// configuration options for VayDNS features (DoH/DoT transports, per-query UDP,
-// forged response filtering, rate limiting, dnstt wire compatibility, etc.).
+// It provides configuration options for VayDNS features (DoH/DoT transports,
+// per-query UDP, forged response filtering, rate limiting, dnstt wire
+// compatibility, etc.).
 //
 // Basic usage (xray-core compatible):
 //
@@ -41,13 +41,13 @@ import (
 
 // Default timeouts for VayDNS mode.
 const (
-	DefaultIdleTimeout          = 10 * time.Second
-	DefaultKeepAlive            = 2 * time.Second
+	DefaultIdleTimeout          = 60 * time.Second
+	DefaultKeepAlive            = 10 * time.Second
 	DefaultOpenStreamTimeout    = 10 * time.Second
 	DefaultReconnectDelay       = 1 * time.Second
 	DefaultReconnectMaxDelay    = 30 * time.Second
-	DefaultSessionCheckInterval = 500 * time.Millisecond
-	DefaultUDPResponseTimeout   = 400 * time.Millisecond
+	DefaultSessionCheckInterval = 20 * time.Second
+	DefaultUDPResponseTimeout   = 500 * time.Millisecond
 	DefaultUDPWorkers           = 100
 	DefaultMaxStreams            = 256
 )
@@ -190,6 +190,7 @@ type Tunnel struct {
 
 	// internal state
 	wireConfig    turbotunnel.WireConfig
+	forgedStats   *ForgedStats
 	resolverConn  net.PacketConn
 	dnsPacketConn *DNSPacketConn
 	kcpConn       *kcp.UDPSession
@@ -270,10 +271,11 @@ func (t *Tunnel) InitiateResolverConnection() error {
 			if timeout <= 0 {
 				timeout = DefaultUDPResponseTimeout
 			}
-			conn, err := NewUDPPacketConn(addr, r.DialerControl, workers, timeout, !r.UDPAcceptErrors)
+			conn, forgedStats, err := NewUDPPacketConn(addr, r.DialerControl, workers, timeout, !r.UDPAcceptErrors)
 			if err != nil {
 				return err
 			}
+			t.forgedStats = forgedStats
 			t.resolverConn = conn
 		}
 		return nil
@@ -327,7 +329,7 @@ func (t *Tunnel) InitiateDNSPacketConn(domain dns.Name) error {
 		rateLimiter = NewRateLimiter(t.TunnelServer.RPS)
 	}
 	maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
-	t.dnsPacketConn = NewDNSPacketConn(t.resolverConn, t.remoteAddr, domain, rateLimiter, maxQnameLen, t.TunnelServer.MaxNumLabels, t.wireConfig)
+	t.dnsPacketConn = NewDNSPacketConn(t.resolverConn, t.remoteAddr, domain, rateLimiter, maxQnameLen, t.TunnelServer.MaxNumLabels, t.wireConfig, t.forgedStats)
 	return nil
 }
 
@@ -338,8 +340,10 @@ func (t *Tunnel) InitiateKCPConn(mtu int) error {
 		maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
 		mtu = DNSNameCapacity(t.TunnelServer.Addr, maxQnameLen, t.TunnelServer.MaxNumLabels) - t.wireConfig.DataOverhead()
 	}
+
 	if mtu < 25 {
-		return fmt.Errorf("MTU %d is too small (minimum 25)", mtu)
+		return fmt.Errorf("MTU %d is too small (minimum 25); try increasing -max-qname-len (currently %d), increasing -max-num-labels (currently %d), using a shorter domain, or decreasing -clientid-size (currently %d)",
+			mtu, t.TunnelServer.effectiveMaxQnameLen(), t.TunnelServer.MaxNumLabels, t.wireConfig.ClientIDSize)
 	}
 	t.TunnelServer.MTU = mtu
 	log.Infof("effective MTU %d", mtu)
@@ -495,8 +499,10 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 
 	maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
 	mtu := DNSNameCapacity(t.TunnelServer.Addr, maxQnameLen, t.TunnelServer.MaxNumLabels) - t.wireConfig.DataOverhead()
+
 	if mtu < 25 {
-		return fmt.Errorf("MTU %d is too small (minimum 25)", mtu)
+		return fmt.Errorf("MTU %d is too small (minimum 25); try increasing -max-qname-len (currently %d), increasing -max-num-labels (currently %d), using a shorter domain, or decreasing -clientid-size (currently %d)",
+			mtu, maxQnameLen, t.TunnelServer.MaxNumLabels, t.wireConfig.ClientIDSize)
 	}
 	log.Infof("effective MTU %d", mtu)
 
@@ -758,7 +764,7 @@ func UTLSClientHelloIDMap() []struct {
 }
 
 // Outbound provides a high-level API for creating tunnels from multiple
-// resolvers and tunnel servers. Compatible with mahsanet/dnstt.
+// resolvers and tunnel servers.
 type Outbound struct {
 	Resolvers     []Resolver
 	TunnelServers []TunnelServer

@@ -28,23 +28,28 @@ type UDPPacketConn struct {
 	dialerControl   func(network, address string, c syscall.RawConn) error
 	responseTimeout time.Duration
 	ignoreErrors    bool
+	forgedStats     *ForgedStats
 	*turbotunnel.QueuePacketConn
 }
 
 // NewUDPPacketConn creates a UDPPacketConn with numWorkers goroutines that
-// each send one query at a time on a fresh UDP socket.
-func NewUDPPacketConn(remoteAddr net.Addr, dialerControl func(network, address string, c syscall.RawConn) error, numWorkers int, responseTimeout time.Duration, ignoreErrors bool) (*UDPPacketConn, error) {
+// each send one query at a time on a fresh UDP socket. The returned
+// ForgedStats pointer is shared with the caller so DNSPacketConn can
+// include per-query forged counts in its reporting.
+func NewUDPPacketConn(remoteAddr net.Addr, dialerControl func(network, address string, c syscall.RawConn) error, numWorkers int, responseTimeout time.Duration, ignoreErrors bool) (*UDPPacketConn, *ForgedStats, error) {
+	stats := &ForgedStats{}
 	pconn := &UDPPacketConn{
 		remoteAddr:      remoteAddr,
 		dialerControl:   dialerControl,
 		responseTimeout: responseTimeout,
 		ignoreErrors:    ignoreErrors,
+		forgedStats:     stats,
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(remoteAddr, 0),
 	}
 	for i := 0; i < numWorkers; i++ {
 		go pconn.sendLoop()
 	}
-	return pconn, nil
+	return pconn, stats, nil
 }
 
 // sendLoop is the per-worker loop. It dequeues one packet at a time from the
@@ -96,7 +101,7 @@ func (c *UDPPacketConn) sendRecv(p []byte) {
 		if resp.Flags&0x000f != dns.RcodeNoError {
 			rcode := resp.Flags & 0x000f
 			if c.ignoreErrors {
-				log.Debugf("udp worker: ignoring forged response (rcode=%d), waiting for real response", rcode)
+				c.forgedStats.Record(rcode)
 				continue
 			}
 			// Pass it through — dns.go recvLoop will drop it as a safety net.
