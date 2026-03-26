@@ -54,31 +54,49 @@ func NewUDPPacketConn(remoteAddr net.Addr, dialerControl func(network, address s
 
 // sendLoop is the per-worker loop. It dequeues one packet at a time from the
 // outgoing queue, sends it on a fresh UDP socket, reads the response, and
-// queues valid responses for the upper layer.
+// queues valid responses for the upper layer. On consecutive send/recv
+// failures, it backs off exponentially to avoid CPU spinning when the
+// resolver is unreachable.
 func (c *UDPPacketConn) sendLoop() {
+	const (
+		initBackoff = 100 * time.Millisecond
+		maxBackoff  = 5 * time.Second
+	)
+	backoff := initBackoff
+
 	for p := range c.OutgoingQueue(c.remoteAddr) {
-		c.sendRecv(p)
+		if err := c.sendRecv(p); err != nil {
+			time.Sleep(backoff)
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+		} else {
+			backoff = initBackoff
+		}
 	}
 }
 
 // sendRecv sends a single DNS query on a fresh UDP socket and reads the
 // response. If ignoreErrors is set, it keeps reading past non-NOERROR
-// responses until a valid one arrives or the timeout expires.
-func (c *UDPPacketConn) sendRecv(p []byte) {
+// responses until a valid one arrives or the timeout expires. Returns nil
+// on success, or an error if the query could not be sent or no valid
+// response arrived within the timeout.
+func (c *UDPPacketConn) sendRecv(p []byte) error {
 	lc := net.ListenConfig{
 		Control: c.dialerControl,
 	}
 	conn, err := lc.ListenPacket(context.Background(), "udp", "")
 	if err != nil {
 		log.Warnf("udp worker: ListenPacket: %v", err)
-		return
+		return err
 	}
 	defer conn.Close()
 
 	_, err = conn.WriteTo(p, c.remoteAddr)
 	if err != nil {
 		log.Warnf("udp worker: WriteTo: %v", err)
-		return
+		return err
 	}
 
 	conn.SetReadDeadline(time.Now().Add(c.responseTimeout))
@@ -88,7 +106,7 @@ func (c *UDPPacketConn) sendRecv(p []byte) {
 		n, _, err := conn.ReadFrom(buf[:])
 		if err != nil {
 			// Timeout or other read error — give up on this query.
-			return
+			return err
 		}
 
 		resp, err := dns.MessageFromWireFormat(buf[:n])
@@ -110,6 +128,6 @@ func (c *UDPPacketConn) sendRecv(p []byte) {
 
 		// Queue the raw wire-format response for the upper layer (dns.go recvLoop).
 		c.QueueIncoming(buf[:n], c.remoteAddr)
-		return
+		return nil
 	}
 }
