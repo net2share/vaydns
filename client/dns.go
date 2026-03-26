@@ -95,6 +95,35 @@ func (rl *RateLimiter) Wait() {
 	}
 }
 
+// ForgedStats tracks forged DNS response counters. It is shared between
+// UDPPacketConn (per-query mode) and DNSPacketConn (shared socket mode) so
+// that forged response visibility is consistent regardless of transport.
+type ForgedStats struct {
+	Total     uint64
+	SERVFAIL  uint64
+	NXDOMAIN  uint64
+	Other     uint64
+}
+
+// Record increments the appropriate counter for the given RCODE and logs
+// a summary at info level.
+func (s *ForgedStats) Record(rcode uint16) {
+	switch rcode {
+	case dns.RcodeServerFailure:
+		atomic.AddUint64(&s.SERVFAIL, 1)
+	case dns.RcodeNameError:
+		atomic.AddUint64(&s.NXDOMAIN, 1)
+	default:
+		atomic.AddUint64(&s.Other, 1)
+	}
+	total := atomic.AddUint64(&s.Total, 1)
+	log.Infof("forged DNS response (rcode=%d, total forged=%d, SERVFAIL=%d, NXDOMAIN=%d, other=%d)",
+		rcode, total,
+		atomic.LoadUint64(&s.SERVFAIL),
+		atomic.LoadUint64(&s.NXDOMAIN),
+		atomic.LoadUint64(&s.Other))
+}
+
 // DNSPacketConn provides a packet-sending and -receiving interface over various
 // forms of DNS. It handles the details of how packets and padding are encoded
 // as a DNS name in the Question section of an upstream query, and as a TXT RR
@@ -122,12 +151,8 @@ type DNSPacketConn struct {
 	maxQnameLen int
 	// maxNumLabels is the maximum number of data labels (0 = unlimited).
 	maxNumLabels int
-	// Forged response tracking
-	forgedCount     uint64
-	countSERVFAIL   uint64
-	countNXDOMAIN   uint64
-	countSuccess    uint64
-	countOtherError uint64
+	// Forged response tracking (shared with UDPPacketConn in per-query mode)
+	forgedStats *ForgedStats
 	// Transport error reporting for session health monitoring
 	transportErr chan error
 	// QueuePacketConn is the direct receiver of ReadFrom and WriteTo calls.
@@ -142,9 +167,14 @@ type DNSPacketConn struct {
 // transport.WriteTo whenever a message needs to be sent.
 // maxQnameLen is the max total QNAME length (0 = 253 per RFC 1035).
 // maxNumLabels is the max number of data labels (0 = unlimited).
-func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig) *DNSPacketConn {
+// forgedStats is shared with the transport layer (e.g. UDPPacketConn) for
+// consistent forged response tracking; if nil, a new instance is created.
+func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats) *DNSPacketConn {
 	if maxQnameLen <= 0 || maxQnameLen > 253 {
 		maxQnameLen = 253
+	}
+	if forgedStats == nil {
+		forgedStats = &ForgedStats{}
 	}
 	// Generate a new random ClientID.
 	clientID := turbotunnel.NewClientID(wireConfig.ClientIDSize)
@@ -156,6 +186,7 @@ func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 		rateLimiter:     rateLimiter,
 		maxQnameLen:     maxQnameLen,
 		maxNumLabels:    maxNumLabels,
+		forgedStats:     forgedStats,
 		transportErr:    make(chan error, 2),
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),
 	}
@@ -273,25 +304,9 @@ func (c *DNSPacketConn) recvLoop(transport net.PacketConn) error {
 
 		payload, isForged := dnsResponsePayload(&resp, c.domain)
 		if isForged {
-			rcode := resp.Flags & 0x000f
-			switch rcode {
-			case dns.RcodeServerFailure:
-				atomic.AddUint64(&c.countSERVFAIL, 1)
-			case dns.RcodeNameError:
-				atomic.AddUint64(&c.countNXDOMAIN, 1)
-			default:
-				atomic.AddUint64(&c.countOtherError, 1)
-			}
-			total := atomic.AddUint64(&c.forgedCount, 1)
-			log.Warnf("forged DNS response (rcode=%d, total forged=%d, SERVFAIL=%d, NXDOMAIN=%d, other=%d)",
-				rcode, total,
-				atomic.LoadUint64(&c.countSERVFAIL),
-				atomic.LoadUint64(&c.countNXDOMAIN),
-				atomic.LoadUint64(&c.countOtherError))
+			c.forgedStats.Record(resp.Flags & 0x000f)
 			continue
 		}
-
-		atomic.AddUint64(&c.countSuccess, 1)
 
 		// Pull out the packets contained in the payload.
 		r := bytes.NewReader(payload)

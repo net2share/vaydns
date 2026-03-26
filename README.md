@@ -130,8 +130,8 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-privkey HEX`       | Server private key as hex string                                  | —          |
 | `-gen-key`           | Generate a new keypair and exit                                   | —          |
 | `-mtu N`             | Max UDP payload size for responses                                | `1232`     |
-| `-idle-timeout D`    | Session idle timeout (must match client)                          | `10s`      |
-| `-keepalive D`       | Keepalive ping interval (must match client, must be < idle-timeout) | `2s`       |
+| `-idle-timeout D`    | Session idle timeout (must match client)                          | `60s`      |
+| `-keepalive D`       | Keepalive ping interval (must match client, must be < idle-timeout) | `10s`      |
 | `-fallback ADDR`     | UDP endpoint to forward non-DNS packets to (e.g. `127.0.0.1:8888`) | —          |
 | `-dnstt-compat`      | Use original dnstt wire format (8-byte ClientID, padding prefixes). Also sets `-idle-timeout` to 2m and `-keepalive` to 10s unless explicitly overridden. | `false`    |
 | `-clientid-size N`   | ClientID size in bytes (ignored when `-dnstt-compat` is set)       | `2`        |
@@ -160,15 +160,17 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 
 | Flag                        | Description                                        | Default |
 | --------------------------- | -------------------------------------------------- | ------- |
-| `-idle-timeout D`           | Session idle timeout (must match server)                                                    | `10s`   |
-| `-keepalive D`              | Keepalive ping interval (must match server, must be < idle-timeout)                         | `2s`    |
+| `-idle-timeout D`           | Session idle timeout (must match server)                                                    | `60s`   |
+| `-keepalive D`              | Keepalive ping interval (must match server, must be < idle-timeout)                         | `10s`   |
 | `-max-streams N`            | Max concurrent streams per session (0 = unlimited)                                          | `256`   |
 | `-open-stream-timeout D`    | Timeout for opening an smux stream                                                          | `10s`   |
 | `-reconnect-min D`          | Initial backoff delay for session reconnect                                                  | `1s`    |
 | `-reconnect-max D`          | Max backoff delay (must be >= reconnect-min)                                                 | `30s`   |
-| `-session-check-interval D` | How often to check if the session is alive (should be shorter than idle-timeout)              | `500ms` |
+| `-session-check-interval D` | How often to check if the session is alive (should be shorter than idle-timeout)              | `20s`   |
 
-> **Note:** `idle-timeout` and `keepalive` must be set to the same values on both client and server — mismatched values will cause one side to close the session before the other detects it. Keep `keepalive` well below `idle-timeout` (the default 5x ratio allows ~5 ping attempts before timeout).
+> **Note:** `idle-timeout` and `keepalive` must be set to the same values on both client and server — mismatched values will cause one side to close the session before the other detects it. Keep `keepalive` well below `idle-timeout` (the default 6x ratio allows ~6 ping attempts before timeout).
+>
+> `session-check-interval` controls how quickly the client detects a dead session and starts reconnecting — it does not affect when the session dies. A lower value means faster reconnection but can cause unnecessary churn on lossy networks. It does not need to match on client and server.
 
 #### UDP transport tuning
 
@@ -177,9 +179,9 @@ These flags only apply when using `-udp`. By default, each query is sent from a 
 | Flag                 | Description                                                                                                                                                | Default |
 | -------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
 | `-udp-workers N`     | Concurrent UDP worker goroutines                                                                                                                           | `100`   |
-| `-udp-timeout D`     | Per-query response timeout — the total time a worker waits for a valid (NOERROR) response. Forged responses are skipped but consume time from this budget. | `400ms` |
-| `-udp-shared-socket` | Use a single shared UDP socket instead of per-query sockets                                                                                                | `false` |
-| `-udp-accept-errors` | Pass through DNS error responses (SERVFAIL, NXDOMAIN) instead of dropping them as forged                                                                   | `false` |
+| `-udp-timeout D`     | Per-query response timeout — the total time a worker waits for a valid (NOERROR) response. Forged responses are discarded but the deadline is not extended — if no valid response arrives within this window, the query is abandoned. | `500ms` |
+| `-udp-shared-socket` | Use a single shared UDP socket instead of per-query sockets. By default, each query is sent from a new socket with a random ephemeral source port, making the tunnel harder to fingerprint or block by port. With this flag, all queries share one socket and source port for the lifetime of the client — blocking that port kills the tunnel. | `false` |
+| `-udp-accept-errors` | In per-query mode, accept the first DNS response regardless of RCODE instead of waiting for a NOERROR response. This disables forged response filtering — the worker stops waiting after the first forged response, so the real response is likely lost. Only useful for debugging; not recommended in production. Ignored when `-udp-shared-socket` is set. | `false` |
 
 #### QNAME constraints
 
@@ -374,8 +376,8 @@ On both client and server, `-dnstt-compat` switches to the original dnstt wire f
 | Setting | VayDNS default | With `-dnstt-compat` | Applies to |
 | ------- | -------------- | -------------------- | ---------- |
 | `-max-qname-len` | `101` | `253` | client |
-| `-idle-timeout` | `10s` | `2m` | client and server |
-| `-keepalive` | `2s` | `10s` | client and server |
+| `-idle-timeout` | `60s` | `2m` | client and server |
+| `-keepalive` | `10s` | `10s` | client and server |
 
 All three can be explicitly overridden even when `-dnstt-compat` is set — the flag only changes the defaults, it does not lock the values. For example, `-dnstt-compat -idle-timeout 30s` uses the dnstt wire format with a 30-second idle timeout.
 
@@ -389,6 +391,10 @@ All three can be explicitly overridden even when `-dnstt-compat` is set — the 
 | Data packet | `[ClientID][DataLen:1][Data]` | `[ClientID][224+3][Padding:3][DataLen:1][Data]` |
 | Poll packet | `[ClientID][Nonce:4]` | `[ClientID][224+8][Padding:8]` |
 | Max data/query | 255 bytes | 223 bytes |
+
+## Client library
+
+The `client` package (`github.com/net2share/vaydns/client`) provides a reusable Go library for embedding VayDNS in other applications. See [docs/client-library.md](docs/client-library.md) for usage and examples.
 
 ## E2E tests
 

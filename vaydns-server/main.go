@@ -73,8 +73,8 @@ import (
 )
 
 const (
-	defaultIdleTimeout = 10 * time.Second
-	defaultKeepAlive   = 2 * time.Second
+	defaultIdleTimeout = 60 * time.Second
+	defaultKeepAlive   = 10 * time.Second
 
 	// How to set the TTL field in Answer resource records.
 	responseTTL = 60

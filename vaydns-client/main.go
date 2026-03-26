@@ -289,6 +289,13 @@ Known TLS fingerprints for -utls are:
 	resolver.UDPSharedSocket = udpSharedSocket
 	resolver.UDPTimeout = udpTimeout
 	resolver.UDPAcceptErrors = udpAcceptErrors
+	if udpAcceptErrors {
+		if udpSharedSocket {
+			log.Warnf("-udp-accept-errors has no effect when -udp-shared-socket is set")
+		} else {
+			log.Warnf("-udp-accept-errors disables forged response filtering; per-query workers will accept the first response regardless of RCODE, which may cause connection failures under DNS injection")
+		}
+	}
 
 	// Build tunnel server config.
 	ts, err := client.NewTunnelServer(domainArg, pubkeyHex)
