@@ -284,8 +284,10 @@ func dnsResponsePayload(resp *dns.Message, domain dns.Name, rrType uint16) ([]by
 	var payload []byte
 	var err error
 	switch rrType {
-	case dns.RRTypeCNAME, dns.RRTypeNS:
+	case dns.RRTypeCNAME:
 		payload, err = dns.DecodeRDataCNAME(answer.Data, domain)
+	case dns.RRTypeNS:
+		payload, err = dns.DecodeRDataNS(answer.Data, domain)
 	case dns.RRTypeMX:
 		payload, err = dns.DecodeRDataMX(answer.Data, domain)
 	case dns.RRTypeSRV:

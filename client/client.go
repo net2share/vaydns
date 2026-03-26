@@ -130,7 +130,7 @@ type TunnelServer struct {
 	RPS float64
 
 	// RecordType selects the DNS record type for downstream data.
-	// Supported values: "txt" (default), "cname".
+	// Supported values: "txt" (default), "cname", "a", "aaaa", "mx", "ns", "srv".
 	RecordType string
 }
 
