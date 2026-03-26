@@ -797,8 +797,7 @@ func EncodeRDataA(p []byte) [][]byte {
 	var chunks [][]byte
 	for len(buf) > 0 {
 		chunk := make([]byte, chunkSize)
-		n := copy(chunk, buf)
-		_ = n
+		copy(chunk, buf)
 		buf = buf[min(chunkSize, len(buf)):]
 		chunks = append(chunks, chunk)
 	}
