@@ -26,4 +26,4 @@ require (
 	golang.org/x/time v0.14.0 // indirect
 )
 
-replace github.com/xtaci/kcp-go/v5 => github.com/net2share/kcp-go/v5 v5.0.0-20260325165956-416ba9d3856d
+replace github.com/xtaci/kcp-go/v5 => github.com/net2share/kcp-go/v5 v5.0.0-20260326140334-6a0eb58a218f
