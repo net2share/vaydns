@@ -168,10 +168,22 @@ func (ts *TunnelServer) wireConfig() turbotunnel.WireConfig {
 
 // effectiveRRType returns the DNS RR type for downstream data.
 func (ts *TunnelServer) effectiveRRType() uint16 {
-	if strings.EqualFold(ts.RecordType, "cname") {
+	switch strings.ToLower(ts.RecordType) {
+	case "a":
+		return dns.RRTypeA
+	case "aaaa":
+		return dns.RRTypeAAAA
+	case "cname":
 		return dns.RRTypeCNAME
+	case "mx":
+		return dns.RRTypeMX
+	case "ns":
+		return dns.RRTypeNS
+	case "srv":
+		return dns.RRTypeSRV
+	default:
+		return dns.RRTypeTXT
 	}
-	return dns.RRTypeTXT
 }
 
 // effectiveMaxQnameLen returns the max QNAME length, applying dnstt defaults.

@@ -46,10 +46,14 @@ var (
 )
 
 const (
-	// https://tools.ietf.org/html/rfc1035#section-3.3.1
-	RRTypeCNAME = 5
 	// https://tools.ietf.org/html/rfc1035#section-3.2.2
-	RRTypeTXT = 16
+	RRTypeA     = 1
+	RRTypeNS    = 2
+	RRTypeCNAME = 5
+	RRTypeMX    = 15
+	RRTypeTXT   = 16
+	RRTypeAAAA  = 28
+	RRTypeSRV   = 33
 	// https://tools.ietf.org/html/rfc6891#section-6.1.1
 	RRTypeOPT = 41
 
@@ -364,25 +368,54 @@ func readRR(r io.ReadSeeker) (RR, error) {
 	if err != nil {
 		return rr, err
 	}
-	if rr.Type == RRTypeCNAME {
-		// CNAME RDATA is a domain name that may contain compression
-		// pointers. Parse it with readName (which follows pointers),
-		// then store the uncompressed wire format in rr.Data.
+	// readRRName is a helper that attempts to parse a compressed name from
+	// RDATA. On failure, it falls back to reading raw bytes.
+	readRRName := func(headerLen int) error {
 		startPos, err := r.Seek(0, io.SeekCurrent)
 		if err != nil {
-			return rr, err
+			return err
+		}
+		// Read any fixed-size header before the name.
+		var header []byte
+		if headerLen > 0 {
+			header = make([]byte, headerLen)
+			if _, err := io.ReadFull(r, header); err != nil {
+				return err
+			}
 		}
 		name, err := readName(r)
 		if err != nil {
-			return rr, err
+			// Fallback: read raw bytes instead.
+			if _, seekErr := r.Seek(startPos, io.SeekStart); seekErr != nil {
+				return seekErr
+			}
+			rr.Data = make([]byte, rdLength)
+			_, err = io.ReadFull(r, rr.Data)
+			return err
 		}
-		rr.Data = name.WireFormat()
+		nameWire := name.WireFormat()
+		rr.Data = make([]byte, headerLen+len(nameWire))
+		copy(rr.Data, header)
+		copy(rr.Data[headerLen:], nameWire)
 		// Ensure reader is positioned past the RDATA.
 		_, err = r.Seek(startPos+int64(rdLength), io.SeekStart)
-		if err != nil {
+		return err
+	}
+
+	switch {
+	case rdLength > 0 && (rr.Type == RRTypeCNAME || rr.Type == RRTypeNS):
+		if err := readRRName(0); err != nil {
 			return rr, err
 		}
-	} else {
+	case rdLength > 2 && rr.Type == RRTypeMX:
+		if err := readRRName(2); err != nil {
+			return rr, err
+		}
+	case rdLength > 6 && rr.Type == RRTypeSRV:
+		if err := readRRName(6); err != nil {
+			return rr, err
+		}
+	default:
 		rr.Data = make([]byte, rdLength)
 		_, err = io.ReadFull(r, rr.Data)
 		if err != nil {
@@ -639,12 +672,9 @@ func EncodeRDataTXT(p []byte) []byte {
 // base32Encoding is a base32 encoding without padding, used for CNAME RDATA.
 var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
-// EncodeRDataCNAME encodes a payload as CNAME RDATA by base32-encoding the
-// payload into DNS name labels and appending the tunnel domain. The result is
-// an uncompressed wire-format domain name suitable for use as RR.Data.
-//
-// https://tools.ietf.org/html/rfc1035#section-3.3.1
-func EncodeRDataCNAME(p []byte, domain Name) ([]byte, error) {
+// encodePayloadAsName base32-encodes a payload into DNS name labels and appends
+// the tunnel domain. Returns the uncompressed wire-format domain name.
+func encodePayloadAsName(p []byte, domain Name) ([]byte, error) {
 	const labelLen = 63
 
 	encoded := make([]byte, base32Encoding.EncodedLen(len(p)))
@@ -668,17 +698,16 @@ func EncodeRDataCNAME(p []byte, domain Name) ([]byte, error) {
 	return name.WireFormat(), nil
 }
 
-// DecodeRDataCNAME decodes CNAME RDATA (uncompressed wire-format domain name)
-// back to the original payload. It strips the tunnel domain suffix, joins the
-// remaining labels, and base32-decodes them.
-func DecodeRDataCNAME(data []byte, domain Name) ([]byte, error) {
+// decodePayloadFromName parses an uncompressed wire-format domain name, strips
+// the tunnel domain suffix, joins the remaining labels, and base32-decodes them.
+func decodePayloadFromName(data []byte, domain Name) ([]byte, error) {
 	name, err := NameFromWireFormat(data)
 	if err != nil {
 		return nil, err
 	}
 	prefix, ok := name.TrimSuffix(domain)
 	if !ok {
-		return nil, fmt.Errorf("CNAME target does not end with domain %s", domain)
+		return nil, fmt.Errorf("name does not end with domain %s", domain)
 	}
 	joined := bytes.ToUpper(bytes.Join(prefix, nil))
 	payload := make([]byte, base32Encoding.DecodedLen(len(joined)))
@@ -687,4 +716,147 @@ func DecodeRDataCNAME(data []byte, domain Name) ([]byte, error) {
 		return nil, err
 	}
 	return payload[:n], nil
+}
+
+// EncodeRDataCNAME encodes a payload as CNAME RDATA.
+// https://tools.ietf.org/html/rfc1035#section-3.3.1
+func EncodeRDataCNAME(p []byte, domain Name) ([]byte, error) {
+	return encodePayloadAsName(p, domain)
+}
+
+// DecodeRDataCNAME decodes CNAME RDATA back to the original payload.
+func DecodeRDataCNAME(data []byte, domain Name) ([]byte, error) {
+	return decodePayloadFromName(data, domain)
+}
+
+// EncodeRDataNS encodes a payload as NS RDATA (identical format to CNAME).
+// https://tools.ietf.org/html/rfc1035#section-3.3.11
+func EncodeRDataNS(p []byte, domain Name) ([]byte, error) {
+	return encodePayloadAsName(p, domain)
+}
+
+// DecodeRDataNS decodes NS RDATA back to the original payload.
+func DecodeRDataNS(data []byte, domain Name) ([]byte, error) {
+	return decodePayloadFromName(data, domain)
+}
+
+// EncodeRDataMX encodes a payload as MX RDATA: [preference:2][exchange:name].
+// https://tools.ietf.org/html/rfc1035#section-3.3.9
+func EncodeRDataMX(p []byte, domain Name) ([]byte, error) {
+	nameWire, err := encodePayloadAsName(p, domain)
+	if err != nil {
+		return nil, err
+	}
+	// Prepend 2-byte preference field (set to 0).
+	rdata := make([]byte, 2+len(nameWire))
+	copy(rdata[2:], nameWire)
+	return rdata, nil
+}
+
+// DecodeRDataMX decodes MX RDATA back to the original payload.
+func DecodeRDataMX(data []byte, domain Name) ([]byte, error) {
+	if len(data) < 2 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	// Skip 2-byte preference field.
+	return decodePayloadFromName(data[2:], domain)
+}
+
+// EncodeRDataSRV encodes a payload as SRV RDATA:
+// [priority:2][weight:2][port:2][target:name].
+// https://tools.ietf.org/html/rfc2782
+func EncodeRDataSRV(p []byte, domain Name) ([]byte, error) {
+	nameWire, err := encodePayloadAsName(p, domain)
+	if err != nil {
+		return nil, err
+	}
+	// Prepend 6-byte header (priority, weight, port — all set to 0).
+	rdata := make([]byte, 6+len(nameWire))
+	copy(rdata[6:], nameWire)
+	return rdata, nil
+}
+
+// DecodeRDataSRV decodes SRV RDATA back to the original payload.
+func DecodeRDataSRV(data []byte, domain Name) ([]byte, error) {
+	if len(data) < 6 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	// Skip 6-byte header.
+	return decodePayloadFromName(data[6:], domain)
+}
+
+// EncodeRDataA encodes a payload as multiple A record RDATA chunks. The payload
+// is prefixed with a 2-byte big-endian length, then split into 4-byte chunks
+// (last chunk zero-padded). Returns a slice of RDATA blobs, one per Answer RR.
+func EncodeRDataA(p []byte) [][]byte {
+	const chunkSize = 4
+	// Prepend 2-byte length header.
+	buf := make([]byte, 2+len(p))
+	binary.BigEndian.PutUint16(buf, uint16(len(p)))
+	copy(buf[2:], p)
+	var chunks [][]byte
+	for len(buf) > 0 {
+		chunk := make([]byte, chunkSize)
+		n := copy(chunk, buf)
+		_ = n
+		buf = buf[min(chunkSize, len(buf)):]
+		chunks = append(chunks, chunk)
+	}
+	return chunks
+}
+
+// DecodeRDataA decodes multiple A record RDATA chunks back to the original
+// payload by concatenating them and reading the 2-byte length prefix.
+func DecodeRDataA(chunks [][]byte) ([]byte, error) {
+	var buf bytes.Buffer
+	for _, chunk := range chunks {
+		buf.Write(chunk)
+	}
+	data := buf.Bytes()
+	if len(data) < 2 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	n := int(binary.BigEndian.Uint16(data))
+	data = data[2:]
+	if len(data) < n {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return data[:n], nil
+}
+
+// EncodeRDataAAAA encodes a payload as multiple AAAA record RDATA chunks. The
+// payload is prefixed with a 2-byte big-endian length, then split into 16-byte
+// chunks (last chunk zero-padded).
+func EncodeRDataAAAA(p []byte) [][]byte {
+	const chunkSize = 16
+	buf := make([]byte, 2+len(p))
+	binary.BigEndian.PutUint16(buf, uint16(len(p)))
+	copy(buf[2:], p)
+	var chunks [][]byte
+	for len(buf) > 0 {
+		chunk := make([]byte, chunkSize)
+		copy(chunk, buf)
+		buf = buf[min(chunkSize, len(buf)):]
+		chunks = append(chunks, chunk)
+	}
+	return chunks
+}
+
+// DecodeRDataAAAA decodes multiple AAAA record RDATA chunks back to the
+// original payload.
+func DecodeRDataAAAA(chunks [][]byte) ([]byte, error) {
+	var buf bytes.Buffer
+	for _, chunk := range chunks {
+		buf.Write(chunk)
+	}
+	data := buf.Bytes()
+	if len(data) < 2 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	n := int(binary.BigEndian.Uint16(data))
+	data = data[2:]
+	if len(data) < n {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return data[:n], nil
 }
