@@ -58,7 +58,6 @@ import (
 	"io"
 	"net"
 	"os"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -742,6 +741,58 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 	}
 }
 
+// encodeResponsePayload encodes the downstream payload into the DNS response
+// Answer section using the record type from the query's Question.
+func encodeResponsePayload(rec *record, data []byte, domain dns.Name) error {
+	qtype := rec.Resp.Question[0].Type
+	switch qtype {
+	case dns.RRTypeA, dns.RRTypeAAAA:
+		var chunks [][]byte
+		if qtype == dns.RRTypeA {
+			chunks = dns.EncodeRDataA(data)
+		} else {
+			chunks = dns.EncodeRDataAAAA(data)
+		}
+		rec.Resp.Answer = make([]dns.RR, len(chunks))
+		for i, chunk := range chunks {
+			rec.Resp.Answer[i] = dns.RR{
+				Name:  rec.Resp.Question[0].Name,
+				Type:  qtype,
+				Class: rec.Resp.Question[0].Class,
+				TTL:   responseTTL,
+				Data:  chunk,
+			}
+		}
+	case dns.RRTypeCNAME:
+		rdata, err := dns.EncodeRDataCNAME(data, domain)
+		if err != nil {
+			return fmt.Errorf("EncodeRDataCNAME: %w", err)
+		}
+		rec.Resp.Answer[0].Data = rdata
+	case dns.RRTypeNS:
+		rdata, err := dns.EncodeRDataNS(data, domain)
+		if err != nil {
+			return fmt.Errorf("EncodeRDataNS: %w", err)
+		}
+		rec.Resp.Answer[0].Data = rdata
+	case dns.RRTypeMX:
+		rdata, err := dns.EncodeRDataMX(data, domain)
+		if err != nil {
+			return fmt.Errorf("EncodeRDataMX: %w", err)
+		}
+		rec.Resp.Answer[0].Data = rdata
+	case dns.RRTypeSRV:
+		rdata, err := dns.EncodeRDataSRV(data, domain)
+		if err != nil {
+			return fmt.Errorf("EncodeRDataSRV: %w", err)
+		}
+		rec.Resp.Answer[0].Data = rdata
+	default:
+		rec.Resp.Answer[0].Data = dns.EncodeRDataTXT(data)
+	}
+	return nil
+}
+
 // sendLoop repeatedly receives records from ch. Those that represent an error
 // response, it sends on the network immediately. Those that represent a
 // response capable of carrying data, it packs full of as many packets as will
@@ -839,55 +890,9 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			}
 			timer.Stop()
 
-			switch rec.Resp.Question[0].Type {
-			case dns.RRTypeA, dns.RRTypeAAAA:
-				// A/AAAA: split payload into multiple answer RRs.
-				var chunks [][]byte
-				if rec.Resp.Question[0].Type == dns.RRTypeA {
-					chunks = dns.EncodeRDataA(payload.Bytes())
-				} else {
-					chunks = dns.EncodeRDataAAAA(payload.Bytes())
-				}
-				rec.Resp.Answer = make([]dns.RR, len(chunks))
-				for i, chunk := range chunks {
-					rec.Resp.Answer[i] = dns.RR{
-						Name:  rec.Resp.Question[0].Name,
-						Type:  rec.Resp.Question[0].Type,
-						Class: rec.Resp.Question[0].Class,
-						TTL:   responseTTL,
-						Data:  chunk,
-					}
-				}
-			case dns.RRTypeCNAME:
-				data, err := dns.EncodeRDataCNAME(payload.Bytes(), domain)
-				if err != nil {
-					log.Errorf("EncodeRDataCNAME: %v", err)
-					continue
-				}
-				rec.Resp.Answer[0].Data = data
-			case dns.RRTypeNS:
-				data, err := dns.EncodeRDataNS(payload.Bytes(), domain)
-				if err != nil {
-					log.Errorf("EncodeRDataNS: %v", err)
-					continue
-				}
-				rec.Resp.Answer[0].Data = data
-			case dns.RRTypeMX:
-				data, err := dns.EncodeRDataMX(payload.Bytes(), domain)
-				if err != nil {
-					log.Errorf("EncodeRDataMX: %v", err)
-					continue
-				}
-				rec.Resp.Answer[0].Data = data
-			case dns.RRTypeSRV:
-				data, err := dns.EncodeRDataSRV(payload.Bytes(), domain)
-				if err != nil {
-					log.Errorf("EncodeRDataSRV: %v", err)
-					continue
-				}
-				rec.Resp.Answer[0].Data = data
-			default:
-				rec.Resp.Answer[0].Data = dns.EncodeRDataTXT(payload.Bytes())
+			if err := encodeResponsePayload(rec, payload.Bytes(), domain); err != nil {
+				log.Errorf("encode response: %v", err)
+				continue
 			}
 		}
 
@@ -1110,11 +1115,7 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	// of a maximum-length name in the query's Question section.
 	var maxEncodedPayload int
 	switch recordType {
-	case dns.RRTypeCNAME, dns.RRTypeNS:
-		maxEncodedPayload = computeMaxEncodedPayloadNameBased(domain)
-	case dns.RRTypeMX:
-		maxEncodedPayload = computeMaxEncodedPayloadNameBased(domain)
-	case dns.RRTypeSRV:
+	case dns.RRTypeCNAME, dns.RRTypeNS, dns.RRTypeMX, dns.RRTypeSRV:
 		maxEncodedPayload = computeMaxEncodedPayloadNameBased(domain)
 	case dns.RRTypeA:
 		maxEncodedPayload = computeMaxEncodedPayloadMultiRR(maxUDPPayload, 4)
@@ -1238,25 +1239,12 @@ Example:
 	log.SetLevel(level)
 	log.SetFormatter(&log.TextFormatter{FullTimestamp: true, TimestampFormat: "2006-01-02 15:04:05"})
 
-	switch strings.ToLower(recordTypeStr) {
-	case "txt":
-		recordType = dns.RRTypeTXT
-	case "cname":
-		recordType = dns.RRTypeCNAME
-	case "a":
-		recordType = dns.RRTypeA
-	case "aaaa":
-		recordType = dns.RRTypeAAAA
-	case "mx":
-		recordType = dns.RRTypeMX
-	case "ns":
-		recordType = dns.RRTypeNS
-	case "srv":
-		recordType = dns.RRTypeSRV
-	default:
-		fmt.Fprintf(os.Stderr, "invalid -record-type %q: must be one of: txt, cname, a, aaaa, mx, ns, srv\n", recordTypeStr)
+	rt, err := dns.ParseRecordType(recordTypeStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
+	recordType = rt
 
 	if genKey {
 		// -gen-key mode.
@@ -1390,8 +1378,8 @@ Example:
 		var wireConfig turbotunnel.WireConfig
 		if compatDnstt {
 			if recordType != dns.RRTypeTXT {
-				fmt.Fprintf(os.Stderr, "-dnstt-compat is not compatible with -record-type %s; dnstt only supports TXT records\n", recordTypeStr)
-				os.Exit(1)
+				log.Warnf("-dnstt-compat forces record-type to txt; ignoring -record-type %s", recordTypeStr)
+				recordType = dns.RRTypeTXT
 			}
 			wireConfig = turbotunnel.WireConfig{ClientIDSize: 8, Compat: true}
 			// Override vaydns defaults with dnstt-compatible values unless

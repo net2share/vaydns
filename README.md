@@ -135,6 +135,7 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-fallback ADDR`     | UDP endpoint to forward non-DNS packets to (e.g. `127.0.0.1:8888`) | —          |
 | `-dnstt-compat`      | Use original dnstt wire format (8-byte ClientID, padding prefixes). Also sets `-idle-timeout` to 2m and `-keepalive` to 10s unless explicitly overridden. | `false`    |
 | `-clientid-size N`   | ClientID size in bytes (ignored when `-dnstt-compat` is set)       | `2`        |
+| `-record-type TYPE`  | DNS record type for downstream data: `txt`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`. Must match the client. Ignored (forced to `txt`) when `-dnstt-compat` is set. | `txt`      |
 | `-log-level LEVEL`   | Log level: debug, info, warning, error                            | `warning`  |
 
 ### Client flags
@@ -207,8 +208,9 @@ These reduce upstream throughput but improve compatibility. The minimum effectiv
 | Flag               | Description                                                | Default         |
 | ------------------ | ---------------------------------------------------------- | --------------- |
 | `-rps N`           | Rate limit outgoing DNS queries per second (0 = unlimited). Uses a token bucket with 1-second burst allowance. | `0`             |
-| `-dnstt-compat`    | Use original dnstt wire format (8-byte ClientID, padding prefixes). Sets `-max-qname-len` to 253 unless explicitly overridden. | `false`         |
+| `-dnstt-compat`    | Use original dnstt wire format (8-byte ClientID, padding prefixes). Sets `-max-qname-len` to 253 unless explicitly overridden. Forces `-record-type` to `txt` with a warning if another type is set. | `false`         |
 | `-clientid-size N` | ClientID size in bytes (ignored when `-dnstt-compat` is set) | `2`             |
+| `-record-type TYPE` | DNS record type for downstream data: `txt`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`. Must match the server. | `txt`           |
 | `-utls SPEC`       | TLS fingerprint distribution (see below)                   | weighted random |
 | `-log-level LEVEL` | Log level: debug, info, warning, error                     | `warning`       |
 
@@ -381,7 +383,25 @@ On both client and server, `-dnstt-compat` switches to the original dnstt wire f
 
 All three can be explicitly overridden even when `-dnstt-compat` is set — the flag only changes the defaults, it does not lock the values. For example, `-dnstt-compat -idle-timeout 30s` uses the dnstt wire format with a 30-second idle timeout.
 
-> **Note:** The timeout defaults are critical for interop with original dnstt binaries. dnstt uses a 10-second keepalive interval (smux default) and a 2-minute idle timeout. Setting `-idle-timeout` below 10s in compat mode will cause sessions to churn because dnstt peers only send keepalives every 10 seconds. When mixing with dnstt, keep the compat defaults unless you know what you're doing.
+> **Note:** `-dnstt-compat` forces `-record-type` to `txt` (with a warning if another type was set). dnstt only supports TXT records, so other record types are incompatible.
+>
+> The timeout defaults are critical for interop with original dnstt binaries. dnstt uses a 10-second keepalive interval (smux default) and a 2-minute idle timeout. Setting `-idle-timeout` below 10s in compat mode will cause sessions to churn because dnstt peers only send keepalives every 10 seconds. When mixing with dnstt, keep the compat defaults unless you know what you're doing.
+
+### Record types
+
+VayDNS supports multiple DNS record types for downstream data encoding. Both client and server must use the same `-record-type`. The default is `txt`, which is compatible with original dnstt and older VayDNS versions.
+
+| Type | Description | Capacity |
+| ---- | ----------- | -------- |
+| `txt` | TXT record (default). Highest capacity, compatible with dnstt. | Bounded by UDP payload (~1200 bytes) |
+| `cname` | CNAME record. Data encoded as a DNS name under the tunnel domain. | Bounded by 255-byte DNS name limit |
+| `ns` | NS record. Same encoding as CNAME. | Same as CNAME |
+| `mx` | MX record. 2-byte preference header + name encoding. | Same as CNAME |
+| `srv` | SRV record. 6-byte header + name encoding. | Same as CNAME |
+| `a` | A records. Data split into 4-byte chunks across multiple answer RRs. | Bounded by UDP payload |
+| `aaaa` | AAAA records. Data split into 16-byte chunks across multiple answer RRs. | Bounded by UDP payload |
+
+> **Compatibility:** Old VayDNS clients (pre-record-type) only send TXT queries. A new server with the default `-record-type txt` is fully compatible with old clients. Using a non-TXT type requires updating both client and server.
 
 ### Wire protocol differences
 

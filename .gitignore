@@ -1,7 +1,5 @@
 vaydns-client/vaydns-client
-vaydns-client/dnstt-client
 vaydns-server/vaydns-server
-vaydns-server/dnstt-server
 
 # IDE
 .idea/

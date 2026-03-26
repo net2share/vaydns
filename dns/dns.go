@@ -70,6 +70,29 @@ const (
 	ExtendedRcodeBadVers = 16 // a.k.a. BADVERS
 )
 
+// ParseRecordType converts a record type string ("txt", "cname", "a", etc.)
+// to the corresponding RR type constant. Returns an error for unknown types.
+func ParseRecordType(s string) (uint16, error) {
+	switch strings.ToLower(s) {
+	case "txt":
+		return RRTypeTXT, nil
+	case "cname":
+		return RRTypeCNAME, nil
+	case "a":
+		return RRTypeA, nil
+	case "aaaa":
+		return RRTypeAAAA, nil
+	case "mx":
+		return RRTypeMX, nil
+	case "ns":
+		return RRTypeNS, nil
+	case "srv":
+		return RRTypeSRV, nil
+	default:
+		return 0, fmt.Errorf("unknown record type %q: must be one of: txt, cname, a, aaaa, mx, ns, srv", s)
+	}
+}
+
 // Name represents a domain name, a sequence of labels each of which is 63
 // octets or less in length.
 //
@@ -785,12 +808,10 @@ func DecodeRDataSRV(data []byte, domain Name) ([]byte, error) {
 	return decodePayloadFromName(data[6:], domain)
 }
 
-// EncodeRDataA encodes a payload as multiple A record RDATA chunks. The payload
-// is prefixed with a 2-byte big-endian length, then split into 4-byte chunks
-// (last chunk zero-padded). Returns a slice of RDATA blobs, one per Answer RR.
-func EncodeRDataA(p []byte) [][]byte {
-	const chunkSize = 4
-	// Prepend 2-byte length header.
+// encodeRDataMultiRR encodes a payload as multiple fixed-size RDATA chunks.
+// The payload is prefixed with a 2-byte big-endian length, then split into
+// chunkSize-byte chunks (last chunk zero-padded).
+func encodeRDataMultiRR(p []byte, chunkSize int) [][]byte {
 	buf := make([]byte, 2+len(p))
 	binary.BigEndian.PutUint16(buf, uint16(len(p)))
 	copy(buf[2:], p)
@@ -804,9 +825,9 @@ func EncodeRDataA(p []byte) [][]byte {
 	return chunks
 }
 
-// DecodeRDataA decodes multiple A record RDATA chunks back to the original
-// payload by concatenating them and reading the 2-byte length prefix.
-func DecodeRDataA(chunks [][]byte) ([]byte, error) {
+// decodeRDataMultiRR decodes multiple fixed-size RDATA chunks back to the
+// original payload by concatenating them and reading the 2-byte length prefix.
+func decodeRDataMultiRR(chunks [][]byte) ([]byte, error) {
 	var buf bytes.Buffer
 	for _, chunk := range chunks {
 		buf.Write(chunk)
@@ -823,39 +844,14 @@ func DecodeRDataA(chunks [][]byte) ([]byte, error) {
 	return data[:n], nil
 }
 
-// EncodeRDataAAAA encodes a payload as multiple AAAA record RDATA chunks. The
-// payload is prefixed with a 2-byte big-endian length, then split into 16-byte
-// chunks (last chunk zero-padded).
-func EncodeRDataAAAA(p []byte) [][]byte {
-	const chunkSize = 16
-	buf := make([]byte, 2+len(p))
-	binary.BigEndian.PutUint16(buf, uint16(len(p)))
-	copy(buf[2:], p)
-	var chunks [][]byte
-	for len(buf) > 0 {
-		chunk := make([]byte, chunkSize)
-		copy(chunk, buf)
-		buf = buf[min(chunkSize, len(buf)):]
-		chunks = append(chunks, chunk)
-	}
-	return chunks
-}
+// EncodeRDataA encodes a payload as multiple A record RDATA chunks (4 bytes each).
+func EncodeRDataA(p []byte) [][]byte { return encodeRDataMultiRR(p, 4) }
 
-// DecodeRDataAAAA decodes multiple AAAA record RDATA chunks back to the
-// original payload.
-func DecodeRDataAAAA(chunks [][]byte) ([]byte, error) {
-	var buf bytes.Buffer
-	for _, chunk := range chunks {
-		buf.Write(chunk)
-	}
-	data := buf.Bytes()
-	if len(data) < 2 {
-		return nil, io.ErrUnexpectedEOF
-	}
-	n := int(binary.BigEndian.Uint16(data))
-	data = data[2:]
-	if len(data) < n {
-		return nil, io.ErrUnexpectedEOF
-	}
-	return data[:n], nil
-}
+// DecodeRDataA decodes multiple A record RDATA chunks back to the original payload.
+func DecodeRDataA(chunks [][]byte) ([]byte, error) { return decodeRDataMultiRR(chunks) }
+
+// EncodeRDataAAAA encodes a payload as multiple AAAA record RDATA chunks (16 bytes each).
+func EncodeRDataAAAA(p []byte) [][]byte { return encodeRDataMultiRR(p, 16) }
+
+// DecodeRDataAAAA decodes multiple AAAA record RDATA chunks back to the original payload.
+func DecodeRDataAAAA(chunks [][]byte) ([]byte, error) { return decodeRDataMultiRR(chunks) }

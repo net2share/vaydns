@@ -15,6 +15,7 @@ import (
 
 	log "github.com/sirupsen/logrus"
 	"github.com/net2share/vaydns/client"
+	"github.com/net2share/vaydns/dns"
 	"github.com/net2share/vaydns/noise"
 )
 
@@ -141,13 +142,11 @@ Known TLS fingerprints for -utls are:
 	}
 	log.Infof("using domain: %s", domainArg)
 
-	switch strings.ToLower(recordTypeStr) {
-	case "txt", "cname", "a", "aaaa", "mx", "ns", "srv":
-		recordTypeStr = strings.ToLower(recordTypeStr)
-	default:
-		fmt.Fprintf(os.Stderr, "invalid -record-type %q: must be one of: txt, cname, a, aaaa, mx, ns, srv\n", recordTypeStr)
+	if _, err := dns.ParseRecordType(recordTypeStr); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
+	recordTypeStr = strings.ToLower(recordTypeStr)
 	log.Infof("record type: %s", recordTypeStr)
 
 	// Resolve public key.
@@ -270,8 +269,8 @@ Known TLS fingerprints for -utls are:
 	// Apply -dnstt-compat overrides.
 	if compatDnstt {
 		if recordTypeStr != "txt" {
-			fmt.Fprintf(os.Stderr, "-dnstt-compat is not compatible with -record-type %s; dnstt only supports TXT records\n", recordTypeStr)
-			os.Exit(1)
+			log.Warnf("-dnstt-compat forces record-type to txt; ignoring -record-type %s", recordTypeStr)
+			recordTypeStr = "txt"
 		}
 		explicitFlags := make(map[string]bool)
 		flag.Visit(func(f *flag.Flag) {
