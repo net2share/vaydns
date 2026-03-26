@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.3](https://github.com/net2share/vaydns/compare/v0.2.2...v0.2.3) (2026-03-26)
+
+
+### Bug Fixes
+
+* revert per-query UDP deadline reset after forged responses ([2936897](https://github.com/net2share/vaydns/commit/2936897b32df9fa5900ebc1e6109affa052777d5))
+
 ## [0.2.2](https://github.com/net2share/vaydns/compare/v0.2.1...v0.2.2) (2026-03-26)
 
 
