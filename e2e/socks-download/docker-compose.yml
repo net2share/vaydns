@@ -12,7 +12,7 @@ services:
   keygen:
     build:
       context: ../..
-      dockerfile: e2e/Dockerfile
+      dockerfile: Dockerfile
     volumes:
       - keys:/keys
     command: >
@@ -49,7 +49,7 @@ services:
   server:
     build:
       context: ../..
-      dockerfile: e2e/Dockerfile
+      dockerfile: Dockerfile
     networks:
       dns-net:
         ipv4_address: 172.28.0.30
@@ -70,7 +70,7 @@ services:
   client:
     build:
       context: ../..
-      dockerfile: e2e/Dockerfile
+      dockerfile: Dockerfile
     networks:
       - dns-net
     volumes:

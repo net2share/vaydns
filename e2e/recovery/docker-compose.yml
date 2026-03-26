@@ -12,7 +12,7 @@ services:
   keygen:
     build:
       context: ../..
-      dockerfile: e2e/Dockerfile
+      dockerfile: Dockerfile
     volumes:
       - keys:/keys
     command: >
@@ -49,7 +49,7 @@ services:
   server:
     build:
       context: ../..
-      dockerfile: e2e/Dockerfile
+      dockerfile: Dockerfile
     networks:
       dns-net:
         ipv4_address: 172.28.0.30
@@ -59,6 +59,7 @@ services:
     command: >
       vaydns-server -udp :53 -privkey-file /keys/server.key
       -domain s.example.com -upstream socks:1080
+      -idle-timeout 10s -keepalive 2s
     depends_on:
       keygen:
         condition: service_completed_successfully
@@ -70,7 +71,7 @@ services:
   client:
     build:
       context: ../..
-      dockerfile: e2e/Dockerfile
+      dockerfile: Dockerfile
     networks:
       - dns-net
     volumes:
@@ -78,6 +79,8 @@ services:
     command: >
       vaydns-client -udp 172.28.0.10:53 -pubkey-file /keys/server.pub
       -domain s.example.com -listen 0.0.0.0:7000
+      -idle-timeout 10s -keepalive 2s -session-check-interval 500ms
+      -reconnect-min 1s -reconnect-max 5s
     depends_on:
       server:
         condition: service_started
