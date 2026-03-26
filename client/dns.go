@@ -240,6 +240,33 @@ func dnsResponsePayload(resp *dns.Message, domain dns.Name, rrType uint16) ([]by
 		return nil, true
 	}
 
+	if len(resp.Answer) < 1 {
+		return nil, false
+	}
+
+	// For A/AAAA, collect RDATA from all answer RRs.
+	if rrType == dns.RRTypeA || rrType == dns.RRTypeAAAA {
+		var chunks [][]byte
+		for _, answer := range resp.Answer {
+			if answer.Type != rrType {
+				return nil, false
+			}
+			chunks = append(chunks, answer.Data)
+		}
+		var payload []byte
+		var err error
+		if rrType == dns.RRTypeA {
+			payload, err = dns.DecodeRDataA(chunks)
+		} else {
+			payload, err = dns.DecodeRDataAAAA(chunks)
+		}
+		if err != nil {
+			return nil, false
+		}
+		return payload, false
+	}
+
+	// All other types: single answer RR.
 	if len(resp.Answer) != 1 {
 		return nil, false
 	}
@@ -247,7 +274,6 @@ func dnsResponsePayload(resp *dns.Message, domain dns.Name, rrType uint16) ([]by
 
 	_, ok := answer.Name.TrimSuffix(domain)
 	if !ok {
-		// Not the name we are expecting.
 		return nil, false
 	}
 
@@ -258,8 +284,12 @@ func dnsResponsePayload(resp *dns.Message, domain dns.Name, rrType uint16) ([]by
 	var payload []byte
 	var err error
 	switch rrType {
-	case dns.RRTypeCNAME:
+	case dns.RRTypeCNAME, dns.RRTypeNS:
 		payload, err = dns.DecodeRDataCNAME(answer.Data, domain)
+	case dns.RRTypeMX:
+		payload, err = dns.DecodeRDataMX(answer.Data, domain)
+	case dns.RRTypeSRV:
+		payload, err = dns.DecodeRDataSRV(answer.Data, domain)
 	default:
 		payload, err = dns.DecodeRDataTXT(answer.Data)
 	}
