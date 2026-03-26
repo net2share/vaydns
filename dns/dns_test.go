@@ -699,3 +699,192 @@ func TestReadRRCNAMECompression(t *testing.T) {
 		t.Errorf("CNAME RDATA: got %x, want %x", answer.Data, expectedWire)
 	}
 }
+
+func TestEncodeDecodeRDataNS(t *testing.T) {
+	domain, _ := ParseName("t.example.com")
+	for _, p := range [][]byte{{}, {0x01}, bytes.Repeat([]byte{0xcd}, 80)} {
+		rdata, err := EncodeRDataNS(p, domain)
+		if err != nil {
+			t.Errorf("EncodeRDataNS(%x): %v", p, err)
+			continue
+		}
+		decoded, err := DecodeRDataNS(rdata, domain)
+		if err != nil {
+			t.Errorf("DecodeRDataNS: %v", err)
+			continue
+		}
+		if !bytes.Equal(decoded, p) {
+			t.Errorf("NS round-trip failed for %x: got %x", p, decoded)
+		}
+	}
+}
+
+func TestEncodeDecodeRDataMX(t *testing.T) {
+	domain, _ := ParseName("t.example.com")
+	for _, p := range [][]byte{{}, {0x01}, bytes.Repeat([]byte{0xab}, 80)} {
+		rdata, err := EncodeRDataMX(p, domain)
+		if err != nil {
+			t.Errorf("EncodeRDataMX(%x): %v", p, err)
+			continue
+		}
+		decoded, err := DecodeRDataMX(rdata, domain)
+		if err != nil {
+			t.Errorf("DecodeRDataMX: %v", err)
+			continue
+		}
+		if !bytes.Equal(decoded, p) {
+			t.Errorf("MX round-trip failed for %x: got %x", p, decoded)
+		}
+	}
+}
+
+func TestEncodeDecodeRDataSRV(t *testing.T) {
+	domain, _ := ParseName("t.example.com")
+	for _, p := range [][]byte{{}, {0x01}, bytes.Repeat([]byte{0xef}, 80)} {
+		rdata, err := EncodeRDataSRV(p, domain)
+		if err != nil {
+			t.Errorf("EncodeRDataSRV(%x): %v", p, err)
+			continue
+		}
+		decoded, err := DecodeRDataSRV(rdata, domain)
+		if err != nil {
+			t.Errorf("DecodeRDataSRV: %v", err)
+			continue
+		}
+		if !bytes.Equal(decoded, p) {
+			t.Errorf("SRV round-trip failed for %x: got %x", p, decoded)
+		}
+	}
+}
+
+func TestEncodeDecodeRDataA(t *testing.T) {
+	for _, p := range [][]byte{
+		{},
+		{0x01},
+		{0x01, 0x02, 0x03, 0x04, 0x05},
+		bytes.Repeat([]byte{0xab}, 100),
+	} {
+		chunks := EncodeRDataA(p)
+		for _, chunk := range chunks {
+			if len(chunk) != 4 {
+				t.Errorf("A chunk length %d != 4", len(chunk))
+			}
+		}
+		decoded, err := DecodeRDataA(chunks)
+		if err != nil {
+			t.Errorf("DecodeRDataA: %v", err)
+			continue
+		}
+		if !bytes.Equal(decoded, p) {
+			t.Errorf("A round-trip failed for len=%d: got len=%d", len(p), len(decoded))
+		}
+	}
+}
+
+func TestEncodeDecodeRDataAAAA(t *testing.T) {
+	for _, p := range [][]byte{
+		{},
+		{0x01},
+		bytes.Repeat([]byte{0xab}, 50),
+		bytes.Repeat([]byte{0xcd}, 200),
+	} {
+		chunks := EncodeRDataAAAA(p)
+		for _, chunk := range chunks {
+			if len(chunk) != 16 {
+				t.Errorf("AAAA chunk length %d != 16", len(chunk))
+			}
+		}
+		decoded, err := DecodeRDataAAAA(chunks)
+		if err != nil {
+			t.Errorf("DecodeRDataAAAA: %v", err)
+			continue
+		}
+		if !bytes.Equal(decoded, p) {
+			t.Errorf("AAAA round-trip failed for len=%d: got len=%d", len(p), len(decoded))
+		}
+	}
+}
+
+func TestReadRRMXCompression(t *testing.T) {
+	// DNS message with MX answer using compression pointer in exchange name.
+	msg := []byte{
+		// Header
+		0x00, 0x01, 0x81, 0x80,
+		0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+		// Question: example.com
+		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		0x03, 'c', 'o', 'm',
+		0x00,
+		0x00, 0x0f, // QTYPE=MX
+		0x00, 0x01,
+		// Answer: example.com MX 10 mail.example.com
+		0xc0, 0x0c, // compression pointer to example.com
+		0x00, 0x0f, // TYPE=MX
+		0x00, 0x01, // CLASS=IN
+		0x00, 0x00, 0x0e, 0x10, // TTL
+		0x00, 0x09, // RDLENGTH=9
+		// RDATA: preference=10, exchange=mail.example.com (compressed)
+		0x00, 0x0a, // preference
+		0x04, 'm', 'a', 'i', 'l', // label "mail"
+		0xc0, 0x0c, // compression pointer to example.com
+	}
+
+	parsed, err := MessageFromWireFormat(msg)
+	if err != nil {
+		t.Fatalf("MessageFromWireFormat: %v", err)
+	}
+	if len(parsed.Answer) != 1 {
+		t.Fatalf("expected 1 answer, got %d", len(parsed.Answer))
+	}
+	answer := parsed.Answer[0]
+	if answer.Type != RRTypeMX {
+		t.Fatalf("expected MX type, got %d", answer.Type)
+	}
+	// Data should be: preference(2) + uncompressed wire format of "mail.example.com"
+	expectedName := Name([][]byte{[]byte("mail"), []byte("example"), []byte("com")})
+	expectedData := append([]byte{0x00, 0x0a}, expectedName.WireFormat()...)
+	if !bytes.Equal(answer.Data, expectedData) {
+		t.Errorf("MX RDATA: got %x, want %x", answer.Data, expectedData)
+	}
+}
+
+func TestReadRRSRVCompression(t *testing.T) {
+	// DNS message with SRV answer using compression pointer in target name.
+	msg := []byte{
+		// Header
+		0x00, 0x01, 0x81, 0x80,
+		0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,
+		// Question: example.com
+		0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e',
+		0x03, 'c', 'o', 'm',
+		0x00,
+		0x00, 0x21, // QTYPE=SRV
+		0x00, 0x01,
+		// Answer: example.com SRV 0 0 443 web.example.com
+		0xc0, 0x0c,
+		0x00, 0x21, // TYPE=SRV
+		0x00, 0x01,
+		0x00, 0x00, 0x0e, 0x10,
+		0x00, 0x0c, // RDLENGTH=12
+		// RDATA
+		0x00, 0x00, // priority
+		0x00, 0x00, // weight
+		0x01, 0xbb, // port=443
+		0x03, 'w', 'e', 'b', // label "web"
+		0xc0, 0x0c, // compression pointer
+	}
+
+	parsed, err := MessageFromWireFormat(msg)
+	if err != nil {
+		t.Fatalf("MessageFromWireFormat: %v", err)
+	}
+	answer := parsed.Answer[0]
+	if answer.Type != RRTypeSRV {
+		t.Fatalf("expected SRV type, got %d", answer.Type)
+	}
+	expectedName := Name([][]byte{[]byte("web"), []byte("example"), []byte("com")})
+	expectedData := append([]byte{0x00, 0x00, 0x00, 0x00, 0x01, 0xbb}, expectedName.WireFormat()...)
+	if !bytes.Equal(answer.Data, expectedData) {
+		t.Errorf("SRV RDATA: got %x, want %x", answer.Data, expectedData)
+	}
+}
