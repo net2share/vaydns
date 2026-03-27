@@ -69,8 +69,8 @@ jobs:
             ARCH="armv7"
           fi
           SUFFIX="${{ matrix.suffix }}"
-          go build -o "vaydns-client-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./vaydns-client
-          go build -o "vaydns-server-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./vaydns-server
+          go build -trimpath -ldflags="-s -w" -o "vaydns-client-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./vaydns-client
+          go build -trimpath -ldflags="-s -w" -o "vaydns-server-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./vaydns-server
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
