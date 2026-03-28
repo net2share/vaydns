@@ -20,7 +20,7 @@ for rt in txt cname a aaaa mx ns srv; do
     fi
 done
 
-for test_dir in socks-download recovery; do
+for test_dir in socks-download recovery transport-recovery; do
     total=$((total + 1))
     echo ""
     echo "========================================"
