@@ -502,19 +502,45 @@ func (t *Tunnel) Handle(lconn *net.TCPConn) error {
 func (t *Tunnel) Close() error {
 	if t.smuxSession != nil {
 		t.smuxSession.Close()
+		t.smuxSession = nil
 	}
 	if t.noiseChannel != nil {
 		t.noiseChannel.Close()
+		t.noiseChannel = nil
 	}
 	if t.kcpConn != nil {
 		log.Debugf("session %08x closed", t.kcpConn.GetConv())
 		t.kcpConn.Close()
+		t.kcpConn = nil
 	}
+	t.closeTransportLayers()
+	return nil
+}
+
+// closeTransportLayers tears down the DNS and resolver transport layers.
+// Safe to call multiple times.
+func (t *Tunnel) closeTransportLayers() {
 	if t.dnsPacketConn != nil {
 		t.dnsPacketConn.Close()
+		t.dnsPacketConn = nil
 	}
 	if t.resolverConn != nil {
 		t.resolverConn.Close()
+		t.resolverConn = nil
+	}
+	t.forgedStats = nil
+}
+
+// resetTransportLayers tears down existing transport layers and creates fresh
+// ones. Used during reconnect to ensure a clean transport stack.
+func (t *Tunnel) resetTransportLayers() error {
+	t.closeTransportLayers()
+	if err := t.InitiateResolverConnection(); err != nil {
+		return fmt.Errorf("resolver connection: %w", err)
+	}
+	if err := t.InitiateDNSPacketConn(t.TunnelServer.Addr); err != nil {
+		t.closeTransportLayers()
+		return fmt.Errorf("DNS packet conn: %w", err)
 	}
 	return nil
 }
@@ -538,22 +564,12 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 	}
 	log.Infof("effective MTU %d", mtu)
 
-	// Create the transport and DNS layer.
-	if err := t.InitiateResolverConnection(); err != nil {
-		return err
-	}
-	defer t.resolverConn.Close()
-
-	if err := t.InitiateDNSPacketConn(t.TunnelServer.Addr); err != nil {
-		return err
-	}
-	transportErrCh := t.dnsPacketConn.TransportErrors()
-
 	ln, err := net.ListenTCP("tcp", localAddr)
 	if err != nil {
 		return fmt.Errorf("opening local listener: %v", err)
 	}
 	defer ln.Close()
+	defer t.closeTransportLayers()
 
 	var sem chan struct{}
 	if t.MaxStreams > 0 {
@@ -561,10 +577,27 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 	}
 
 	for {
+		// Rebuild the transport stack from the resolver upward.
+		var transportErrCh <-chan error
+		delay := t.ReconnectMinDelay
+		for {
+			if err := t.resetTransportLayers(); err != nil {
+				log.Warnf("transport rebuild failed: %v; retrying in %v", err, delay)
+				time.Sleep(delay)
+				delay *= 2
+				if delay > t.ReconnectMaxDelay {
+					delay = t.ReconnectMaxDelay
+				}
+				continue
+			}
+			transportErrCh = t.dnsPacketConn.TransportErrors()
+			break
+		}
+
 		// Create a new tunnel session with exponential backoff.
 		var conn *kcp.UDPSession
 		var sess *smux.Session
-		delay := t.ReconnectMinDelay
+		delay = t.ReconnectMinDelay
 		for {
 			conn, sess, err = t.createSession(mtu)
 			if err == nil {
@@ -590,7 +623,8 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 					select {
 					case <-sessDone:
 						sessionAlive = false
-					case <-transportErrCh:
+					case tErr := <-transportErrCh:
+						log.Warnf("session %08x transport error: %v", conv, tErr)
 						sessionAlive = false
 					default:
 					}
@@ -598,6 +632,7 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 				}
 				sess.Close()
 				conn.Close()
+				t.closeTransportLayers()
 				return err
 			}
 
@@ -606,14 +641,15 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 				local.Close()
 				sessionAlive = false
 				continue
-			case <-transportErrCh:
+			case tErr := <-transportErrCh:
+				log.Warnf("session %08x transport error: %v", conv, tErr)
 				local.Close()
 				sessionAlive = false
 				continue
 			default:
 			}
 
-			go func() {
+			go func(sess *smux.Session, conv uint32) {
 				if sem != nil {
 					sem <- struct{}{}
 					defer func() { <-sem }()
@@ -623,12 +659,13 @@ func (t *Tunnel) ListenAndServe(listenAddr string) error {
 				if err != nil {
 					log.Warnf("handle: %v", err)
 				}
-			}()
+			}(sess, conv)
 		}
 
 		log.Warnf("session %08x closed, reconnecting", conv)
 		sess.Close()
 		conn.Close()
+		t.closeTransportLayers()
 	}
 }
 
