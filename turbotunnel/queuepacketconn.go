@@ -33,27 +33,32 @@ type taggedPacket struct {
 // packet has been stashed, it must be checked for by calling Unstash in
 // addition to OutgoingQueue.
 type QueuePacketConn struct {
-	remotes   *RemoteMap
-	localAddr net.Addr
-	recvQueue chan taggedPacket
-	closeOnce sync.Once
-	closed    chan struct{}
+	remotes      *RemoteMap
+	localAddr    net.Addr
+	recvQueue    chan taggedPacket
+	overflowMode QueueOverflowMode
+	closeOnce    sync.Once
+	closed       chan struct{}
 	// What error to return when the QueuePacketConn is closed.
 	err atomic.Value
 }
 
 // NewQueuePacketConn makes a new QueuePacketConn, set to track recent peers
 // for at least a duration of timeout. If queueSize is <= 0, the default
-// QueueSize is used.
-func NewQueuePacketConn(localAddr net.Addr, timeout time.Duration, queueSize int) *QueuePacketConn {
+// QueueSize is used. If overflowMode is empty, QueueOverflowDrop is used.
+func NewQueuePacketConn(localAddr net.Addr, timeout time.Duration, queueSize int, overflowMode QueueOverflowMode) *QueuePacketConn {
 	if queueSize <= 0 {
 		queueSize = QueueSize
 	}
+	if overflowMode == "" {
+		overflowMode = DefaultQueueOverflowMode
+	}
 	return &QueuePacketConn{
-		remotes:   NewRemoteMap(timeout, queueSize),
-		localAddr: localAddr,
-		recvQueue: make(chan taggedPacket, queueSize),
-		closed:    make(chan struct{}),
+		remotes:      NewRemoteMap(timeout, queueSize),
+		localAddr:    localAddr,
+		recvQueue:    make(chan taggedPacket, queueSize),
+		overflowMode: overflowMode,
+		closed:       make(chan struct{}),
 	}
 }
 
@@ -69,6 +74,13 @@ func (c *QueuePacketConn) QueueIncoming(p []byte, addr net.Addr) {
 	// Copy the slice so that the caller may reuse it.
 	buf := make([]byte, len(p))
 	copy(buf, p)
+	if c.overflowMode == QueueOverflowBlock {
+		select {
+		case <-c.closed:
+		case c.recvQueue <- taggedPacket{buf, addr}:
+		}
+		return
+	}
 	select {
 	case c.recvQueue <- taggedPacket{buf, addr}:
 	default:
@@ -127,9 +139,23 @@ func (c *QueuePacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 		record := c.remotes.lookup(addr)
 		record.sendMu.Lock()
 		if record.expired {
-			// The record was expired while we looked it up. Get a
-			// fresh one and try again.
 			record.sendMu.Unlock()
+			continue
+		}
+		if c.overflowMode == QueueOverflowBlock {
+			// Release the lock before blocking so removeExpired can
+			// still make progress.
+			sendQueue := record.SendQueue
+			record.sendMu.Unlock()
+			sent, closed := c.blockingSend(sendQueue, buf)
+			if closed {
+				return 0, &net.OpError{Op: "write", Net: c.LocalAddr().Network(), Addr: c.LocalAddr(), Err: c.err.Load().(error)}
+			}
+			if sent {
+				return len(buf), nil
+			}
+			// Channel was closed by removeExpired (record expired).
+			// Retry with a fresh record.
 			continue
 		}
 		select {
@@ -141,6 +167,27 @@ func (c *QueuePacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 			record.sendMu.Unlock()
 			return len(buf), nil
 		}
+	}
+}
+
+// blockingSend attempts to send buf on sendQueue, blocking until space is
+// available, the QueuePacketConn is closed, or the channel itself is closed
+// (record expired). Returns (true, false) on success, (false, true) if the
+// conn is closed, and (false, false) if the channel was closed by expiry.
+func (c *QueuePacketConn) blockingSend(sendQueue chan []byte, buf []byte) (sent bool, connClosed bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			// Send on closed channel — record was expired by
+			// removeExpired while we were blocking. Caller retries.
+			sent = false
+			connClosed = false
+		}
+	}()
+	select {
+	case <-c.closed:
+		return false, true
+	case sendQueue <- buf:
+		return true, false
 	}
 }
 

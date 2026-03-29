@@ -202,8 +202,9 @@ type Tunnel struct {
 	ReconnectMaxDelay    time.Duration // default: 30s
 	SessionCheckInterval time.Duration // default: 20s
 	HandshakeTimeout     time.Duration // default: 30s
-	PacketQueueSize      int           // default: QueueSize (512)
-	KCPWindowSize        int           // default: PacketQueueSize/2
+	PacketQueueSize      int                           // default: QueueSize (512)
+	KCPWindowSize        int                           // default: PacketQueueSize/2
+	QueueOverflowMode    turbotunnel.QueueOverflowMode // default: drop
 
 	// internal state
 	wireConfig    turbotunnel.WireConfig
@@ -271,6 +272,13 @@ func (t *Tunnel) effectivePacketQueueSize() int {
 	return turbotunnel.QueueSize
 }
 
+func (t *Tunnel) effectiveQueueOverflowMode() turbotunnel.QueueOverflowMode {
+	if t.QueueOverflowMode != "" {
+		return t.QueueOverflowMode
+	}
+	return turbotunnel.DefaultQueueOverflowMode
+}
+
 func (t *Tunnel) effectiveKCPWindowSize() int {
 	if t.KCPWindowSize > 0 {
 		return t.KCPWindowSize
@@ -309,7 +317,7 @@ func (t *Tunnel) InitiateResolverConnection() error {
 			if timeout <= 0 {
 				timeout = DefaultUDPResponseTimeout
 			}
-			conn, forgedStats, err := NewUDPPacketConn(addr, r.DialerControl, workers, timeout, !r.UDPAcceptErrors, t.effectivePacketQueueSize())
+			conn, forgedStats, err := NewUDPPacketConn(addr, r.DialerControl, workers, timeout, !r.UDPAcceptErrors, t.effectivePacketQueueSize(), t.effectiveQueueOverflowMode())
 			if err != nil {
 				return err
 			}
@@ -328,7 +336,7 @@ func (t *Tunnel) InitiateResolverConnection() error {
 		} else {
 			rt = http.DefaultTransport
 		}
-		conn, err := NewHTTPPacketConn(rt, r.ResolverAddr, 8, t.effectivePacketQueueSize())
+		conn, err := NewHTTPPacketConn(rt, r.ResolverAddr, 8, t.effectivePacketQueueSize(), t.effectiveQueueOverflowMode())
 		if err != nil {
 			return err
 		}
@@ -348,7 +356,7 @@ func (t *Tunnel) InitiateResolverConnection() error {
 				return tls.DialWithDialer(&net.Dialer{}, network, addr, nil)
 			}
 		}
-		conn, err := NewTLSPacketConn(r.ResolverAddr, dialTLSContext, t.effectivePacketQueueSize())
+		conn, err := NewTLSPacketConn(r.ResolverAddr, dialTLSContext, t.effectivePacketQueueSize(), t.effectiveQueueOverflowMode())
 		if err != nil {
 			return err
 		}
@@ -368,7 +376,7 @@ func (t *Tunnel) InitiateDNSPacketConn(domain dns.Name) error {
 	}
 	maxQnameLen := t.TunnelServer.effectiveMaxQnameLen()
 	rrType := t.TunnelServer.effectiveRRType()
-	t.dnsPacketConn = NewDNSPacketConn(t.resolverConn, t.remoteAddr, domain, rateLimiter, maxQnameLen, t.TunnelServer.MaxNumLabels, t.wireConfig, t.forgedStats, rrType, t.effectivePacketQueueSize())
+	t.dnsPacketConn = NewDNSPacketConn(t.resolverConn, t.remoteAddr, domain, rateLimiter, maxQnameLen, t.TunnelServer.MaxNumLabels, t.wireConfig, t.forgedStats, rrType, t.effectivePacketQueueSize(), t.effectiveQueueOverflowMode())
 	return nil
 }
 

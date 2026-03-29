@@ -1101,7 +1101,7 @@ func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int) int {
 	return low
 }
 
-func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration, queueSize int, kcpWindowSize int, wireConfig turbotunnel.WireConfig) error {
+func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration, queueSize int, kcpWindowSize int, queueOverflowMode turbotunnel.QueueOverflowMode, wireConfig turbotunnel.WireConfig) error {
 	defer dnsConn.Close()
 
 	log.Infof("pubkey %x", noise.PubkeyFromPrivkey(privkey))
@@ -1135,7 +1135,7 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	log.Infof("effective MTU %d", mtu)
 
 	// Start up the virtual PacketConn for turbotunnel.
-	ttConn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2, queueSize)
+	ttConn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2, queueSize, queueOverflowMode)
 	ln, err := kcp.ServeConn(nil, 0, 0, ttConn)
 	if err != nil {
 		return fmt.Errorf("opening KCP listener: %v", err)
@@ -1195,6 +1195,7 @@ func main() {
 	var recordTypeStr string
 	var queueSize int
 	var kcpWindowSize int
+	var queueOverflowStr string
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -1230,6 +1231,7 @@ Example:
 	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv)")
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for DNS tunnel transport")
 	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
+	flag.StringVar(&queueOverflowStr, "queue-overflow", string(turbotunnel.DefaultQueueOverflowMode), "queue overflow behavior: drop or block")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
@@ -1396,7 +1398,12 @@ Example:
 			fmt.Fprintf(os.Stderr, "-kcp-window-size (%d) must be <= -queue-size (%d)\n", kcpWindowSize, queueSize)
 			os.Exit(1)
 		}
-		log.Infof("transport config: queue-size=%d kcp-window-size=%d", queueSize, kcpWindowSize)
+		queueOverflowMode, err := turbotunnel.ParseQueueOverflowMode(queueOverflowStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid -queue-overflow: %v\n", err)
+			os.Exit(1)
+		}
+		log.Infof("transport config: queue-size=%d kcp-window-size=%d queue-overflow=%s", queueSize, kcpWindowSize, queueOverflowMode)
 
 		var wireConfig turbotunnel.WireConfig
 		if compatDnstt {
@@ -1441,7 +1448,7 @@ Example:
 			}
 		}
 
-		err = run(privkey, domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive, queueSize, kcpWindowSize, wireConfig)
+		err = run(privkey, domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive, queueSize, kcpWindowSize, queueOverflowMode, wireConfig)
 		if err != nil {
 			log.Fatalf("%v", err)
 		}
