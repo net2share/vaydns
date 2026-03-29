@@ -75,6 +75,9 @@ import (
 const (
 	defaultIdleTimeout = 60 * time.Second
 	defaultKeepAlive   = 10 * time.Second
+	// Bound the pre-smux handshake so half-open KCP sessions cannot linger
+	// indefinitely and consume server resources.
+	defaultHandshakeTimeout = 15 * time.Second
 
 	// How to set the TTL field in Answer resource records.
 	responseTTL = 60
@@ -270,7 +273,7 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 // then awaits smux streams. It passes each stream to handleStream.
 func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string, idleTimeout time.Duration, keepAlive time.Duration) error {
 	// Put a Noise channel on top of the KCP conn.
-	rw, err := noise.NewServer(conn, privkey)
+	rw, err := serverNoiseHandshake(conn, privkey, defaultHandshakeTimeout)
 	if err != nil {
 		return err
 	}
@@ -307,6 +310,18 @@ func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string, idleTi
 			}
 		}()
 	}
+}
+
+// serverNoiseHandshake performs the server-side Noise handshake with a deadline.
+// This prevents half-open KCP sessions from hanging forever before smux starts.
+func serverNoiseHandshake(conn *kcp.UDPSession, privkey []byte, timeout time.Duration) (io.ReadWriteCloser, error) {
+	conn.SetDeadline(time.Now().Add(timeout))
+	rw, err := noise.NewServer(conn, privkey)
+	conn.SetDeadline(time.Time{}) // clear deadline after the handshake
+	if err != nil {
+		return nil, fmt.Errorf("noise handshake: %v", err)
+	}
+	return rw, nil
 }
 
 // acceptSessions listens for incoming KCP connections and passes them to
