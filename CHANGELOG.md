@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.6](https://github.com/net2share/vaydns/compare/v0.2.5...v0.2.6) (2026-03-29)
+
+
+### Features
+
+* add -queue-overflow flag with drop (default) and block modes ([#55](https://github.com/net2share/vaydns/issues/55)) ([28b139d](https://github.com/net2share/vaydns/commit/28b139d71751db84480bbc911a3f60952a2a0c70))
+* make transport queue and KCP window sizes configurable ([#54](https://github.com/net2share/vaydns/issues/54)) ([068f348](https://github.com/net2share/vaydns/commit/068f348527cd7d373beaa5fbdc9d3b98774378cb))
+
+
+### Bug Fixes
+
+* **client:** propagate fatal send errors to trigger reconnect ([#52](https://github.com/net2share/vaydns/issues/52)) ([79f8b78](https://github.com/net2share/vaydns/commit/79f8b786d170a3b167e67b33dd40e5ffa2f254c0))
+* **logging:** default to info and rate-limit forged DNS logs with milestone summaries ([#50](https://github.com/net2share/vaydns/issues/50)) ([a0af00e](https://github.com/net2share/vaydns/commit/a0af00e035e591bd3608fa561311cb55b2725362))
+* **server:** add deadline to server-side Noise handshake ([#56](https://github.com/net2share/vaydns/issues/56)) ([607aefe](https://github.com/net2share/vaydns/commit/607aefecf805efb399637de66fd8c26f1a998108))
+
 ## [0.2.5](https://github.com/net2share/vaydns/compare/v0.2.4...v0.2.5) (2026-03-29)
 
 
