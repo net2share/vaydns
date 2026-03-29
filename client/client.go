@@ -425,39 +425,74 @@ func (t *Tunnel) InitiateSmuxSession() error {
 	return nil
 }
 
-// OpenStream opens a new multiplexed stream. Returns a net.Conn.
-func (t *Tunnel) OpenStream() (net.Conn, error) {
-	timeout := t.OpenStreamTimeout
-	if timeout <= 0 {
-		timeout = DefaultOpenStreamTimeout
-	}
-
+// openStreamWithTimeout opens an smux stream with a timeout. If the open
+// succeeds after the timeout, the late stream is closed to avoid leaking
+// capacity.
+func openStreamWithTimeout(conv uint32, timeout time.Duration, open func() (*smux.Stream, error)) (*smux.Stream, error) {
 	type result struct {
 		stream *smux.Stream
 		err    error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		s, err := t.smuxSession.OpenStream()
+		s, err := open()
 		ch <- result{s, err}
 	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 
 	select {
 	case r := <-ch:
 		if r.err != nil {
-			return nil, fmt.Errorf("session %08x opening stream: %v", t.kcpConn.GetConv(), r.err)
+			return nil, fmt.Errorf("session %08x opening stream: %v", conv, r.err)
 		}
-		log.Debugf("stream %08x:%d ready", t.kcpConn.GetConv(), r.stream.ID())
 		return r.stream, nil
-	case <-time.After(timeout):
+	case <-timer.C:
 		go func() {
-			r := <-ch
-			if r.stream != nil {
+			if r, ok := <-ch; ok && r.stream != nil {
 				r.stream.Close()
 			}
 		}()
-		return nil, fmt.Errorf("session %08x opening stream: timed out after %v", t.kcpConn.GetConv(), timeout)
+		return nil, fmt.Errorf("session %08x opening stream: timed out after %v", conv, timeout)
 	}
+}
+
+// shouldLogCopyError returns true if the error from io.Copy is worth logging.
+// Expected close/EOF/timeout errors are filtered out.
+func shouldLogCopyError(err error) bool {
+	if err == nil || err == io.EOF || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return false
+	}
+	return true
+}
+
+// OpenStream opens a new multiplexed stream. Returns a net.Conn.
+func (t *Tunnel) OpenStream() (net.Conn, error) {
+	if t.smuxSession == nil {
+		return nil, fmt.Errorf("smux session is not initialized")
+	}
+
+	timeout := t.OpenStreamTimeout
+	if timeout <= 0 {
+		timeout = DefaultOpenStreamTimeout
+	}
+
+	var conv uint32
+	if t.kcpConn != nil {
+		conv = t.kcpConn.GetConv()
+	}
+
+	stream, err := openStreamWithTimeout(conv, timeout, t.smuxSession.OpenStream)
+	if err != nil {
+		return nil, err
+	}
+	log.Debugf("stream %08x:%d ready", conv, stream.ID())
+	return stream, nil
 }
 
 // Handle forwards data between a local TCP connection and a tunnel stream.
@@ -473,10 +508,7 @@ func (t *Tunnel) Handle(lconn *net.TCPConn) error {
 	go func() {
 		defer wg.Done()
 		_, err := io.Copy(stream, lconn)
-		if err == io.EOF {
-			err = nil
-		}
-		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
+		if shouldLogCopyError(err) {
 			log.Warnf("copy stream←local: %v", err)
 		}
 		lconn.CloseRead()
@@ -485,13 +517,11 @@ func (t *Tunnel) Handle(lconn *net.TCPConn) error {
 	go func() {
 		defer wg.Done()
 		_, err := io.Copy(lconn, stream)
-		if err == io.EOF {
-			err = nil
-		}
-		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
+		if shouldLogCopyError(err) {
 			log.Warnf("copy local←stream: %v", err)
 		}
 		lconn.CloseWrite()
+		lconn.CloseRead()
 	}()
 	wg.Wait()
 
@@ -669,31 +699,9 @@ func (t *Tunnel) createSession(mtu int) (*kcp.UDPSession, *smux.Session, error) 
 
 // handleConn forwards a single TCP connection through the tunnel session.
 func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32) error {
-	type streamResult struct {
-		stream *smux.Stream
-		err    error
-	}
-	ch := make(chan streamResult, 1)
-	go func() {
-		s, err := sess.OpenStream()
-		ch <- streamResult{s, err}
-	}()
-
-	var stream *smux.Stream
-	select {
-	case r := <-ch:
-		if r.err != nil {
-			return fmt.Errorf("session %08x opening stream: %v", conv, r.err)
-		}
-		stream = r.stream
-	case <-time.After(t.OpenStreamTimeout):
-		go func() {
-			r := <-ch
-			if r.stream != nil {
-				r.stream.Close()
-			}
-		}()
-		return fmt.Errorf("session %08x opening stream: timed out after %v", conv, t.OpenStreamTimeout)
+	stream, err := openStreamWithTimeout(conv, t.OpenStreamTimeout, sess.OpenStream)
+	if err != nil {
+		return err
 	}
 
 	defer func() {
@@ -707,10 +715,7 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32)
 	go func() {
 		defer wg.Done()
 		_, err := io.Copy(stream, local)
-		if err == io.EOF {
-			err = nil
-		}
-		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
+		if shouldLogCopyError(err) {
 			log.Warnf("stream %08x:%d copy stream←local: %v", conv, stream.ID(), err)
 		}
 		local.CloseRead()
@@ -719,13 +724,11 @@ func (t *Tunnel) handleConn(local *net.TCPConn, sess *smux.Session, conv uint32)
 	go func() {
 		defer wg.Done()
 		_, err := io.Copy(local, stream)
-		if err == io.EOF {
-			err = nil
-		}
-		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
+		if shouldLogCopyError(err) {
 			log.Warnf("stream %08x:%d copy local←stream: %v", conv, stream.ID(), err)
 		}
 		local.CloseWrite()
+		local.CloseRead()
 	}()
 	wg.Wait()
 
