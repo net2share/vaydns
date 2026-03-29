@@ -63,10 +63,24 @@ func (c *UDPPacketConn) sendLoop() {
 		maxBackoff  = 5 * time.Second
 	)
 	backoff := initBackoff
+	outgoing := c.OutgoingQueue(c.remoteAddr)
+	closed := c.Closed()
 
-	for p := range c.OutgoingQueue(c.remoteAddr) {
+	for {
+		var p []byte
+		select {
+		case <-closed:
+			return
+		case p = <-outgoing:
+		}
 		if err := c.sendRecv(p); err != nil {
-			time.Sleep(backoff)
+			timer := time.NewTimer(backoff)
+			select {
+			case <-closed:
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 			backoff *= 2
 			if backoff > maxBackoff {
 				backoff = maxBackoff

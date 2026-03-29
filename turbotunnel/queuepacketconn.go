@@ -154,6 +154,9 @@ func (c *QueuePacketConn) Close() error {
 	return c.closeWithError(nil)
 }
 
+// Closed returns a channel that is closed when the QueuePacketConn is closed.
+func (c *QueuePacketConn) Closed() <-chan struct{} { return c.closed }
+
 // LocalAddr returns the localAddr value that was passed to NewQueuePacketConn.
 func (c *QueuePacketConn) LocalAddr() net.Addr { return c.localAddr }
 

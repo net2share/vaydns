@@ -112,7 +112,15 @@ func (c *TLSPacketConn) recvLoop(conn net.Conn) error {
 // length-prefixed, to conn.
 func (c *TLSPacketConn) sendLoop(conn net.Conn) error {
 	bw := bufio.NewWriter(conn)
-	for p := range c.QueuePacketConn.OutgoingQueue(turbotunnel.DummyAddr{}) {
+	outgoing := c.QueuePacketConn.OutgoingQueue(turbotunnel.DummyAddr{})
+	closed := c.QueuePacketConn.Closed()
+	for {
+		var p []byte
+		select {
+		case <-closed:
+			return nil
+		case p = <-outgoing:
+		}
 		length := uint16(len(p))
 		if int(length) != len(p) {
 			panic(len(p))
@@ -130,5 +138,4 @@ func (c *TLSPacketConn) sendLoop(conn net.Conn) error {
 			return err
 		}
 	}
-	return nil
 }
