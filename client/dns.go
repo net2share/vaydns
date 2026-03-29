@@ -195,7 +195,7 @@ type DNSPacketConn struct {
 // maxNumLabels is the max number of data labels (0 = unlimited).
 // forgedStats is shared with the transport layer (e.g. UDPPacketConn) for
 // consistent forged response tracking; if nil, a new instance is created.
-func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16) *DNSPacketConn {
+func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16, queueSize int) *DNSPacketConn {
 	if maxQnameLen <= 0 || maxQnameLen > 253 {
 		maxQnameLen = 253
 	}
@@ -218,7 +218,7 @@ func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 		maxNumLabels:    maxNumLabels,
 		forgedStats:     forgedStats,
 		transportErr:    make(chan error, 2),
-		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0),
+		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0, queueSize),
 	}
 	go func() {
 		err := c.recvLoop(transport)

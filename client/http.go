@@ -58,14 +58,14 @@ type HTTPPacketConn struct {
 // that will be used to make requests. urlString should include any necessary
 // path components; e.g., "/dns-query". numSenders is the number of concurrent
 // sender-receiver goroutines to run.
-func NewHTTPPacketConn(rt http.RoundTripper, urlString string, numSenders int) (*HTTPPacketConn, error) {
+func NewHTTPPacketConn(rt http.RoundTripper, urlString string, numSenders int, queueSize int) (*HTTPPacketConn, error) {
 	c := &HTTPPacketConn{
 		client: &http.Client{
 			Transport: rt,
 			Timeout:   1 * time.Minute,
 		},
 		urlString:       urlString,
-		QueuePacketConn: turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, 0),
+		QueuePacketConn: turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, 0, queueSize),
 	}
 	for i := 0; i < numSenders; i++ {
 		go c.sendLoop()

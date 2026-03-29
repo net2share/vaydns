@@ -43,12 +43,16 @@ type QueuePacketConn struct {
 }
 
 // NewQueuePacketConn makes a new QueuePacketConn, set to track recent peers
-// for at least a duration of timeout.
-func NewQueuePacketConn(localAddr net.Addr, timeout time.Duration) *QueuePacketConn {
+// for at least a duration of timeout. If queueSize is <= 0, the default
+// QueueSize is used.
+func NewQueuePacketConn(localAddr net.Addr, timeout time.Duration, queueSize int) *QueuePacketConn {
+	if queueSize <= 0 {
+		queueSize = QueueSize
+	}
 	return &QueuePacketConn{
-		remotes:   NewRemoteMap(timeout),
+		remotes:   NewRemoteMap(timeout, queueSize),
 		localAddr: localAddr,
-		recvQueue: make(chan taggedPacket, QueueSize),
+		recvQueue: make(chan taggedPacket, queueSize),
 		closed:    make(chan struct{}),
 	}
 }
@@ -119,12 +123,24 @@ func (c *QueuePacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	// Copy the slice so that the caller may reuse it.
 	buf := make([]byte, len(p))
 	copy(buf, p)
-	select {
-	case c.remotes.SendQueue(addr) <- buf:
-		return len(buf), nil
-	default:
-		// Drop the outgoing packet if the send queue is full.
-		return len(buf), nil
+	for {
+		record := c.remotes.lookup(addr)
+		record.sendMu.Lock()
+		if record.expired {
+			// The record was expired while we looked it up. Get a
+			// fresh one and try again.
+			record.sendMu.Unlock()
+			continue
+		}
+		select {
+		case record.SendQueue <- buf:
+			record.sendMu.Unlock()
+			return len(buf), nil
+		default:
+			// Drop the outgoing packet if the send queue is full.
+			record.sendMu.Unlock()
+			return len(buf), nil
+		}
 	}
 }
 

@@ -38,7 +38,7 @@ type TLSPacketConn struct {
 // server at addr as a DNS over TLS resolver. It maintains a TLS connection to
 // the resolver, reconnecting as necessary. It closes the connection if any
 // reconnection attempt fails.
-func NewTLSPacketConn(addr string, dialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error)) (*TLSPacketConn, error) {
+func NewTLSPacketConn(addr string, dialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error), queueSize int) (*TLSPacketConn, error) {
 	dial := func() (net.Conn, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 		defer cancel()
@@ -53,7 +53,7 @@ func NewTLSPacketConn(addr string, dialTLSContext func(ctx context.Context, netw
 		return nil, err
 	}
 	c := &TLSPacketConn{
-		QueuePacketConn: turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, 0),
+		QueuePacketConn: turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, 0, queueSize),
 	}
 	c.setConn(conn)
 	go func() {

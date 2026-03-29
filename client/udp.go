@@ -36,7 +36,7 @@ type UDPPacketConn struct {
 // each send one query at a time on a fresh UDP socket. The returned
 // ForgedStats pointer is shared with the caller so DNSPacketConn can
 // include per-query forged counts in its reporting.
-func NewUDPPacketConn(remoteAddr net.Addr, dialerControl func(network, address string, c syscall.RawConn) error, numWorkers int, responseTimeout time.Duration, ignoreErrors bool) (*UDPPacketConn, *ForgedStats, error) {
+func NewUDPPacketConn(remoteAddr net.Addr, dialerControl func(network, address string, c syscall.RawConn) error, numWorkers int, responseTimeout time.Duration, ignoreErrors bool, queueSize int) (*UDPPacketConn, *ForgedStats, error) {
 	stats := &ForgedStats{}
 	pconn := &UDPPacketConn{
 		remoteAddr:      remoteAddr,
@@ -44,7 +44,7 @@ func NewUDPPacketConn(remoteAddr net.Addr, dialerControl func(network, address s
 		responseTimeout: responseTimeout,
 		ignoreErrors:    ignoreErrors,
 		forgedStats:     stats,
-		QueuePacketConn: turbotunnel.NewQueuePacketConn(remoteAddr, 0),
+		QueuePacketConn: turbotunnel.NewQueuePacketConn(remoteAddr, 0, queueSize),
 	}
 	for i := 0; i < numWorkers; i++ {
 		go pconn.sendLoop()

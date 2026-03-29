@@ -16,6 +16,7 @@ import (
 	"github.com/net2share/vaydns/client"
 	"github.com/net2share/vaydns/dns"
 	"github.com/net2share/vaydns/noise"
+	"github.com/net2share/vaydns/turbotunnel"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -54,6 +55,8 @@ func main() {
 	var compatDnstt bool
 	var clientIDSize int
 	var recordTypeStr string
+	var queueSize int
+	var kcpWindowSize int
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -114,6 +117,8 @@ Known TLS fingerprints for -utls are:
 	flag.BoolVar(&compatDnstt, "dnstt-compat", false, "use original dnstt wire format (8-byte ClientID, padding prefixes)")
 	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes (ignored when -dnstt-compat is set)")
 	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv)")
+	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for transport and DNS layers")
+	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
@@ -265,6 +270,24 @@ Known TLS fingerprints for -utls are:
 		fmt.Fprintf(os.Stderr, "-open-stream-timeout (%s) must be greater than 0\n", openStreamTimeout)
 		os.Exit(1)
 	}
+	if queueSize <= 0 {
+		fmt.Fprintf(os.Stderr, "-queue-size (%d) must be greater than 0\n", queueSize)
+		os.Exit(1)
+	}
+	if kcpWindowSize < 0 {
+		fmt.Fprintf(os.Stderr, "-kcp-window-size (%d) must be >= 0\n", kcpWindowSize)
+		os.Exit(1)
+	}
+	if kcpWindowSize == 0 {
+		kcpWindowSize = queueSize / 2
+		if kcpWindowSize < 1 {
+			kcpWindowSize = 1
+		}
+	}
+	if kcpWindowSize > queueSize {
+		fmt.Fprintf(os.Stderr, "-kcp-window-size (%d) must be <= -queue-size (%d)\n", kcpWindowSize, queueSize)
+		os.Exit(1)
+	}
 
 	// Apply -dnstt-compat overrides.
 	if compatDnstt {
@@ -337,6 +360,9 @@ Known TLS fingerprints for -utls are:
 	tunnel.ReconnectMinDelay = reconnectMinDelay
 	tunnel.ReconnectMaxDelay = reconnectMaxDelay
 	tunnel.SessionCheckInterval = sessionCheckInterval
+	tunnel.PacketQueueSize = queueSize
+	tunnel.KCPWindowSize = kcpWindowSize
+	log.Infof("transport config: queue-size=%d kcp-window-size=%d", queueSize, kcpWindowSize)
 
 	if compatDnstt {
 		log.Infof("wire config: clientid-size=8 compat=true")

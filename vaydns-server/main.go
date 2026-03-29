@@ -311,7 +311,7 @@ func acceptStreams(conn *kcp.UDPSession, privkey []byte, upstream string, idleTi
 
 // acceptSessions listens for incoming KCP connections and passes them to
 // acceptStreams.
-func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string, idleTimeout time.Duration, keepAlive time.Duration) error {
+func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string, idleTimeout time.Duration, keepAlive time.Duration, kcpWindowSize int) error {
 	for {
 		conn, err := ln.AcceptKCP()
 		if err != nil {
@@ -331,7 +331,7 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string, 
 			0, // default resend
 			1, // nc=1 => congestion window off
 		)
-		conn.SetWindowSize(turbotunnel.QueueSize/2, turbotunnel.QueueSize/2)
+		conn.SetWindowSize(kcpWindowSize, kcpWindowSize)
 		if rc := conn.SetMtu(mtu); !rc {
 			panic(rc)
 		}
@@ -1101,7 +1101,7 @@ func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int) int {
 	return low
 }
 
-func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration, wireConfig turbotunnel.WireConfig) error {
+func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration, queueSize int, kcpWindowSize int, wireConfig turbotunnel.WireConfig) error {
 	defer dnsConn.Close()
 
 	log.Infof("pubkey %x", noise.PubkeyFromPrivkey(privkey))
@@ -1135,14 +1135,14 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	log.Infof("effective MTU %d", mtu)
 
 	// Start up the virtual PacketConn for turbotunnel.
-	ttConn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2)
+	ttConn := turbotunnel.NewQueuePacketConn(turbotunnel.DummyAddr{}, idleTimeout*2, queueSize)
 	ln, err := kcp.ServeConn(nil, 0, 0, ttConn)
 	if err != nil {
 		return fmt.Errorf("opening KCP listener: %v", err)
 	}
 	defer ln.Close()
 	go func() {
-		err := acceptSessions(ln, privkey, mtu, upstream, idleTimeout, keepAlive)
+		err := acceptSessions(ln, privkey, mtu, upstream, idleTimeout, keepAlive, kcpWindowSize)
 		if err != nil {
 			log.Warnf("acceptSessions: %v", err)
 		}
@@ -1193,6 +1193,8 @@ func main() {
 	var compatDnstt bool
 	var clientIDSize int
 	var recordTypeStr string
+	var queueSize int
+	var kcpWindowSize int
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -1226,6 +1228,8 @@ Example:
 	flag.BoolVar(&compatDnstt, "dnstt-compat", false, "use original dnstt wire format (8-byte ClientID, padding prefixes)")
 	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes (ignored when -dnstt-compat is set)")
 	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv)")
+	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for DNS tunnel transport")
+	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
@@ -1374,6 +1378,25 @@ Example:
 			fmt.Fprintf(os.Stderr, "-keepalive (%s) must be less than -idle-timeout (%s)\n", keepAlive, idleTimeout)
 			os.Exit(1)
 		}
+		if queueSize <= 0 {
+			fmt.Fprintf(os.Stderr, "-queue-size (%d) must be greater than 0\n", queueSize)
+			os.Exit(1)
+		}
+		if kcpWindowSize < 0 {
+			fmt.Fprintf(os.Stderr, "-kcp-window-size (%d) must be >= 0\n", kcpWindowSize)
+			os.Exit(1)
+		}
+		if kcpWindowSize == 0 {
+			kcpWindowSize = queueSize / 2
+			if kcpWindowSize < 1 {
+				kcpWindowSize = 1
+			}
+		}
+		if kcpWindowSize > queueSize {
+			fmt.Fprintf(os.Stderr, "-kcp-window-size (%d) must be <= -queue-size (%d)\n", kcpWindowSize, queueSize)
+			os.Exit(1)
+		}
+		log.Infof("transport config: queue-size=%d kcp-window-size=%d", queueSize, kcpWindowSize)
 
 		var wireConfig turbotunnel.WireConfig
 		if compatDnstt {
@@ -1418,7 +1441,7 @@ Example:
 			}
 		}
 
-		err = run(privkey, domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive, wireConfig)
+		err = run(privkey, domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive, queueSize, kcpWindowSize, wireConfig)
 		if err != nil {
 			log.Fatalf("%v", err)
 		}
