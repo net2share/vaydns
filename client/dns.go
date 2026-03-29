@@ -594,8 +594,11 @@ func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error 
 		}
 		err := c.send(transport, p, addr)
 		if err != nil {
-			log.Errorf("send: %v", err)
-			continue
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				log.Warnf("send timeout: %v", err)
+				continue
+			}
+			return err
 		}
 	}
 }
