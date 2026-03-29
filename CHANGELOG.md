@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.5](https://github.com/net2share/vaydns/compare/v0.2.4...v0.2.5) (2026-03-29)
+
+
+### Bug Fixes
+
+* **ci:** filter download-artifact to vaydns-* pattern ([01b38c0](https://github.com/net2share/vaydns/commit/01b38c03ded836a986e50bdc8dddae945d8d178d))
+* clean worker shutdown on transport close ([#47](https://github.com/net2share/vaydns/issues/47)) ([13c9317](https://github.com/net2share/vaydns/commit/13c93171643a8c786e9cb7e629f06ce03809906e))
+* rebuild transport stack on reconnect ([#44](https://github.com/net2share/vaydns/issues/44)) ([9594ab7](https://github.com/net2share/vaydns/commit/9594ab7d72666cf15e8f81713790c0e455ec432d))
+
+
+### Performance Improvements
+
+* increase default packet queue size from 128 to 512 ([92bee04](https://github.com/net2share/vaydns/commit/92bee04f3961fa58f3b4991caeb6af0948c88093))
+
 ## [0.2.4](https://github.com/net2share/vaydns/compare/v0.2.3...v0.2.4) (2026-03-26)
 
 
