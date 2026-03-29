@@ -136,7 +136,10 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-dnstt-compat`      | Use original dnstt wire format (8-byte ClientID, padding prefixes). Also sets `-idle-timeout` to 2m and `-keepalive` to 10s unless explicitly overridden. | `false`    |
 | `-clientid-size N`   | ClientID size in bytes (ignored when `-dnstt-compat` is set)       | `2`        |
 | `-record-type TYPE`  | DNS record type for downstream data: `txt`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`. Must match the client. Ignored (forced to `txt`) when `-dnstt-compat` is set. | `txt`      |
-| `-log-level LEVEL`   | Log level: debug, info, warning, error                            | `warning`  |
+| `-queue-size N`      | Packet queue size for transport and DNS layers                    | `512`      |
+| `-kcp-window-size N` | KCP send/receive window size in packets (0 = queue-size/2)        | `0`        |
+| `-queue-overflow MODE` | Queue overflow behavior: `drop` (silent discard) or `block` (backpressure) | `drop`     |
+| `-log-level LEVEL`   | Log level: debug, info, warning, error                            | `info`     |
 
 ### Client flags
 
@@ -184,6 +187,18 @@ These flags only apply when using `-udp`. By default, each query is sent from a 
 | `-udp-shared-socket` | Use a single shared UDP socket instead of per-query sockets. By default, each query is sent from a new socket with a random ephemeral source port, making the tunnel harder to fingerprint or block by port. With this flag, all queries share one socket and source port for the lifetime of the client — blocking that port kills the tunnel. | `false` |
 | `-udp-accept-errors` | In per-query mode, accept the first DNS response regardless of RCODE instead of waiting for a NOERROR response. This disables forged response filtering — the worker stops waiting after the first forged response, so the real response is likely lost. Only useful for debugging; not recommended in production. Ignored when `-udp-shared-socket` is set. | `false` |
 
+#### Queue and KCP tuning
+
+These flags apply to all transports (UDP, DoH, DoT) on the client side. The server has the same flags.
+
+| Flag                   | Description                                                        | Default |
+| ---------------------- | ------------------------------------------------------------------ | ------- |
+| `-queue-size N`        | Packet queue size for transport and DNS layers                     | `512`   |
+| `-kcp-window-size N`   | KCP send/receive window size in packets (0 = queue-size/2). Must be <= queue-size. | `0`     |
+| `-queue-overflow MODE` | Queue overflow behavior: `drop` (silent discard, KCP retransmits) or `block` (backpressure). | `drop`  |
+
+> **Note:** `drop` is the correct default for most deployments. It matches the original dnstt design where KCP handles retransmission of locally dropped packets. `block` mode applies backpressure instead of dropping — this can help in some censored network conditions but may slow down UDP transport significantly. Both client and server can use different modes independently.
+
 #### QNAME constraints
 
 Some resolvers reject queries with long QNAMEs or too many labels.
@@ -212,7 +227,7 @@ These reduce upstream throughput but improve compatibility. The minimum effectiv
 | `-clientid-size N` | ClientID size in bytes (ignored when `-dnstt-compat` is set) | `2`             |
 | `-record-type TYPE` | DNS record type for downstream data: `txt`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`. Must match the server. | `txt`           |
 | `-utls SPEC`       | TLS fingerprint distribution (see below)                   | weighted random |
-| `-log-level LEVEL` | Log level: debug, info, warning, error                     | `warning`       |
+| `-log-level LEVEL` | Log level: debug, info, warning, error                     | `info`          |
 
 ### TLS fingerprinting (client)
 

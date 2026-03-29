@@ -90,6 +90,11 @@ t.SessionCheckInterval = 20 * time.Second
 t.ReconnectMinDelay = 1 * time.Second
 t.ReconnectMaxDelay = 30 * time.Second
 t.HandshakeTimeout = 15 * time.Second
+
+// Transport queue options
+t.PacketQueueSize = 512                                // queue capacity
+t.KCPWindowSize = 256                                  // KCP window (0 = queue-size/2)
+t.QueueOverflowMode = turbotunnel.QueueOverflowDrop    // "drop" or "block"
 ```
 
 Zero values use sensible defaults. See the [README](../README.md) for flag descriptions — each flag maps directly to a struct field.
