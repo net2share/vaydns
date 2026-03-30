@@ -357,7 +357,7 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string, 
 			}()
 			err := acceptStreams(conn, privkey, upstream, idleTimeout, keepAlive)
 			if err != nil && !errors.Is(err, io.ErrClosedPipe) {
-				log.Warnf("session %08x acceptStreams: %v", conn.GetConv(), err)
+				log.Warnf("session %08x accept streams: %v", conn.GetConv(), err)
 			}
 		}()
 	}
@@ -1159,7 +1159,7 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	go func() {
 		err := acceptSessions(ln, privkey, mtu, upstream, idleTimeout, keepAlive, kcpWindowSize)
 		if err != nil {
-			log.Warnf("acceptSessions: %v", err)
+			log.Warnf("accept sessions: %v", err)
 		}
 	}()
 
