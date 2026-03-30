@@ -30,13 +30,13 @@ import (
 	"syscall"
 	"time"
 
-	log "github.com/sirupsen/logrus"
-	utls "github.com/refraction-networking/utls"
-	"github.com/xtaci/kcp-go/v5"
-	"github.com/xtaci/smux"
 	"github.com/net2share/vaydns/dns"
 	"github.com/net2share/vaydns/noise"
 	"github.com/net2share/vaydns/turbotunnel"
+	utls "github.com/refraction-networking/utls"
+	log "github.com/sirupsen/logrus"
+	"github.com/xtaci/kcp-go/v5"
+	"github.com/xtaci/smux"
 )
 
 // Default timeouts for VayDNS mode.
@@ -47,10 +47,10 @@ const (
 	DefaultReconnectDelay       = 1 * time.Second
 	DefaultReconnectMaxDelay    = 30 * time.Second
 	DefaultSessionCheckInterval = 20 * time.Second
-	DefaultUDPResponseTimeout    = 500 * time.Millisecond
-	DefaultUDPWorkers            = 100
-	DefaultMaxStreams             = 256
-	DefaultHandshakeTimeout      = 15 * time.Second
+	DefaultUDPResponseTimeout   = 500 * time.Millisecond
+	DefaultUDPWorkers           = 100
+	DefaultMaxStreams           = 0 // unlimited
+	DefaultHandshakeTimeout     = 15 * time.Second
 )
 
 // Default timeouts for dnstt compatibility mode.
@@ -194,14 +194,14 @@ type Tunnel struct {
 	TunnelServer TunnelServer
 
 	// Session configuration. Zero values use defaults.
-	IdleTimeout          time.Duration // default: 10s (2m with DnsttCompat)
-	KeepAlive            time.Duration // default: 2s (10s with DnsttCompat)
-	OpenStreamTimeout    time.Duration // default: 10s
-	MaxStreams            int           // default: 256 (0 = unlimited)
-	ReconnectMinDelay    time.Duration // default: 1s
-	ReconnectMaxDelay    time.Duration // default: 30s
-	SessionCheckInterval time.Duration // default: 20s
-	HandshakeTimeout     time.Duration // default: 30s
+	IdleTimeout          time.Duration                 // default: 10s (2m with DnsttCompat)
+	KeepAlive            time.Duration                 // default: 2s (10s with DnsttCompat)
+	OpenStreamTimeout    time.Duration                 // default: 10s
+	MaxStreams           int                           // default: 0 (0 = unlimited)
+	ReconnectMinDelay    time.Duration                 // default: 1s
+	ReconnectMaxDelay    time.Duration                 // default: 30s
+	SessionCheckInterval time.Duration                 // default: 20s
+	HandshakeTimeout     time.Duration                 // default: 30s
 	PacketQueueSize      int                           // default: QueueSize (512)
 	KCPWindowSize        int                           // default: PacketQueueSize/2
 	QueueOverflowMode    turbotunnel.QueueOverflowMode // default: drop

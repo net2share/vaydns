@@ -166,7 +166,7 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | --------------------------- | -------------------------------------------------- | ------- |
 | `-idle-timeout D`           | Session idle timeout (must match server)                                                    | `60s`   |
 | `-keepalive D`              | Keepalive ping interval (must match server, must be < idle-timeout)                         | `10s`   |
-| `-max-streams N`            | Max concurrent streams per session (0 = unlimited)                                          | `256`   |
+| `-max-streams N`            | Max concurrent streams per session (0 = unlimited)                                          | `0`   |
 | `-open-stream-timeout D`    | Timeout for opening an smux stream                                                          | `10s`   |
 | `-reconnect-min D`          | Initial backoff delay for session reconnect                                                  | `1s`    |
 | `-reconnect-max D`          | Max backoff delay (must be >= reconnect-min)                                                 | `30s`   |
