@@ -19,8 +19,6 @@
 package client
 
 import (
-	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -302,79 +300,13 @@ func (t *Tunnel) InitiateResolverConnection() error {
 		t.remoteAddr = turbotunnel.DummyAddr{}
 		return nil
 	}
-	r := t.Resolvers[0]
-	switch r.ResolverType {
-	case ResolverTypeUDP:
-		addr, err := net.ResolveUDPAddr("udp", r.ResolverAddr)
-		if err != nil {
-			return err
-		}
-		t.remoteAddr = addr
-		if r.UDPSharedSocket {
-			lc := net.ListenConfig{Control: r.DialerControl}
-			conn, err := lc.ListenPacket(context.Background(), "udp", ":0")
-			if err != nil {
-				return err
-			}
-			t.resolverConn = conn
-		} else {
-			workers := r.UDPWorkers
-			if workers <= 0 {
-				workers = DefaultUDPWorkers
-			}
-			timeout := r.UDPTimeout
-			if timeout <= 0 {
-				timeout = DefaultUDPResponseTimeout
-			}
-			conn, forgedStats, err := NewUDPPacketConn(addr, r.DialerControl, workers, timeout, !r.UDPAcceptErrors, t.effectivePacketQueueSize(), t.effectiveQueueOverflowMode())
-			if err != nil {
-				return err
-			}
-			t.forgedStats = forgedStats
-			t.resolverConn = conn
-		}
-		return nil
-
-	case ResolverTypeDOH:
-		t.remoteAddr = turbotunnel.DummyAddr{}
-		var rt http.RoundTripper
-		if r.RoundTripper != nil {
-			rt = r.RoundTripper
-		} else if r.UTLSClientHelloID != nil {
-			rt = NewUTLSRoundTripper(nil, r.UTLSClientHelloID)
-		} else {
-			rt = http.DefaultTransport
-		}
-		conn, err := NewHTTPPacketConn(rt, r.ResolverAddr, 8, t.effectivePacketQueueSize(), t.effectiveQueueOverflowMode())
-		if err != nil {
-			return err
-		}
-		t.resolverConn = conn
-		return nil
-
-	case ResolverTypeDOT:
-		t.remoteAddr = turbotunnel.DummyAddr{}
-		var dialTLSContext func(ctx context.Context, network, addr string) (net.Conn, error)
-		if r.UTLSClientHelloID != nil {
-			id := r.UTLSClientHelloID
-			dialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return UTLSDialContext(ctx, network, addr, nil, id)
-			}
-		} else {
-			dialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-				return tls.DialWithDialer(&net.Dialer{}, network, addr, nil)
-			}
-		}
-		conn, err := NewTLSPacketConn(r.ResolverAddr, dialTLSContext, t.effectivePacketQueueSize(), t.effectiveQueueOverflowMode())
-		if err != nil {
-			return err
-		}
-		t.resolverConn = conn
-		return nil
-
-	default:
-		return fmt.Errorf("unsupported resolver type: %s", r.ResolverType)
+	conn, addr, err := GetResolverConnection(t.Resolvers[0], t.effectivePacketQueueSize(), t.effectiveQueueOverflowMode())
+	if err != nil {
+		return err
 	}
+	t.resolverConn = conn
+	t.remoteAddr = addr
+	return nil
 }
 
 // InitiateDNSPacketConn wraps the resolver connection with DNS encoding.

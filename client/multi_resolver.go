@@ -248,7 +248,7 @@ func NewMultiResolver(resolvers []Resolver, mode SelectionMode, queueSize int, o
 
 	entries := make([]*resolverEntry, 0, len(resolvers))
 	for _, r := range resolvers {
-		conn, addr, err := getResolverConnection(r, queueSize, overflowMode)
+		conn, addr, err := GetResolverConnection(r, queueSize, overflowMode)
 		if err != nil {
 			for _, e := range entries {
 				e.conn.Close()
@@ -542,7 +542,7 @@ func (mr *MultiResolver) SetWriteDeadline(t time.Time) error {
 }
 
 // getResolverConnection creates the underlying transport net.PacketConn for r.
-func getResolverConnection(r Resolver, queueSize int, overflowMode turbotunnel.QueueOverflowMode) (net.PacketConn, net.Addr, error) {
+func GetResolverConnection(r Resolver, queueSize int, overflowMode turbotunnel.QueueOverflowMode) (net.PacketConn, net.Addr, error) {
 	switch r.ResolverType {
 	case ResolverTypeUDP:
 		addr, err := net.ResolveUDPAddr("udp", r.ResolverAddr)
