@@ -49,7 +49,7 @@ const (
 	DefaultSessionCheckInterval = 20 * time.Second
 	DefaultUDPResponseTimeout   = 500 * time.Millisecond
 	DefaultUDPWorkers           = 100
-	DefaultMaxStreams           = 256
+	DefaultMaxStreams           = 0 // unlimited
 	DefaultHandshakeTimeout     = 15 * time.Second
 )
 
@@ -197,7 +197,7 @@ type Tunnel struct {
 	IdleTimeout          time.Duration                 // default: 10s (2m with DnsttCompat)
 	KeepAlive            time.Duration                 // default: 2s (10s with DnsttCompat)
 	OpenStreamTimeout    time.Duration                 // default: 10s
-	MaxStreams           int                           // default: 256 (0 = unlimited)
+	MaxStreams           int                           // default: 0 (0 = unlimited)
 	ReconnectMinDelay    time.Duration                 // default: 1s
 	ReconnectMaxDelay    time.Duration                 // default: 30s
 	SessionCheckInterval time.Duration                 // default: 20s
