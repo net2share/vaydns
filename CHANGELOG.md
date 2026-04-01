@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.7](https://github.com/net2share/vaydns/compare/v0.2.6...v0.2.7) (2026-04-01)
+
+
+### Features
+
+* tune session defaults and hide session-check-interval flag ([24bdc6c](https://github.com/net2share/vaydns/commit/24bdc6cc37bdd9a3c91900cf61e477207517cb1f))
+
+
+### Bug Fixes
+
+* **client:** make max streams unlimited by default ([#63](https://github.com/net2share/vaydns/issues/63)) ([4cc8228](https://github.com/net2share/vaydns/commit/4cc8228190d415cc75a32f59d83f7b77ae2af68b))
+* **server:** clarify server accept session/stream warning logs ([#57](https://github.com/net2share/vaydns/issues/57)) ([654b2f1](https://github.com/net2share/vaydns/commit/654b2f1f3dbde6001e19c9f8391436c28e55eca9))
+
 ## [0.2.6](https://github.com/net2share/vaydns/compare/v0.2.5...v0.2.6) (2026-03-29)
 
 
