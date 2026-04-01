@@ -30,13 +30,13 @@ import (
 	"syscall"
 	"time"
 
-	log "github.com/sirupsen/logrus"
-	utls "github.com/refraction-networking/utls"
-	"github.com/xtaci/kcp-go/v5"
-	"github.com/xtaci/smux"
 	"github.com/net2share/vaydns/dns"
 	"github.com/net2share/vaydns/noise"
 	"github.com/net2share/vaydns/turbotunnel"
+	utls "github.com/refraction-networking/utls"
+	log "github.com/sirupsen/logrus"
+	"github.com/xtaci/kcp-go/v5"
+	"github.com/xtaci/smux"
 )
 
 // Default timeouts for VayDNS mode.
@@ -47,10 +47,10 @@ const (
 	DefaultReconnectDelay       = 1 * time.Second
 	DefaultReconnectMaxDelay    = 30 * time.Second
 	DefaultSessionCheckInterval = 20 * time.Second
-	DefaultUDPResponseTimeout    = 500 * time.Millisecond
-	DefaultUDPWorkers            = 100
-	DefaultMaxStreams             = 256
-	DefaultHandshakeTimeout      = 15 * time.Second
+	DefaultUDPResponseTimeout   = 500 * time.Millisecond
+	DefaultUDPWorkers           = 100
+	DefaultMaxStreams           = 256
+	DefaultHandshakeTimeout     = 15 * time.Second
 )
 
 // Default timeouts for dnstt compatibility mode.
@@ -190,18 +190,18 @@ func (ts *TunnelServer) effectiveMaxQnameLen() int {
 // either call the step-by-step Initiate* methods (for embedding in frameworks
 // like xray-core) or call ListenAndServe for a fully managed session.
 type Tunnel struct {
-	Resolver     Resolver
+	Resolvers    []Resolver
 	TunnelServer TunnelServer
 
 	// Session configuration. Zero values use defaults.
-	IdleTimeout          time.Duration // default: 10s (2m with DnsttCompat)
-	KeepAlive            time.Duration // default: 2s (10s with DnsttCompat)
-	OpenStreamTimeout    time.Duration // default: 10s
-	MaxStreams            int           // default: 256 (0 = unlimited)
-	ReconnectMinDelay    time.Duration // default: 1s
-	ReconnectMaxDelay    time.Duration // default: 30s
-	SessionCheckInterval time.Duration // default: 20s
-	HandshakeTimeout     time.Duration // default: 30s
+	IdleTimeout          time.Duration                 // default: 10s (2m with DnsttCompat)
+	KeepAlive            time.Duration                 // default: 2s (10s with DnsttCompat)
+	OpenStreamTimeout    time.Duration                 // default: 10s
+	MaxStreams           int                           // default: 256 (0 = unlimited)
+	ReconnectMinDelay    time.Duration                 // default: 1s
+	ReconnectMaxDelay    time.Duration                 // default: 30s
+	SessionCheckInterval time.Duration                 // default: 20s
+	HandshakeTimeout     time.Duration                 // default: 30s
 	PacketQueueSize      int                           // default: QueueSize (512)
 	KCPWindowSize        int                           // default: PacketQueueSize/2
 	QueueOverflowMode    turbotunnel.QueueOverflowMode // default: drop
@@ -219,9 +219,9 @@ type Tunnel struct {
 
 // NewTunnel creates a Tunnel with the given resolver and server configuration.
 // Zero-value fields use sensible defaults.
-func NewTunnel(resolver Resolver, tunnelServer TunnelServer) (*Tunnel, error) {
+func NewTunnel(resolvers []Resolver, tunnelServer TunnelServer) (*Tunnel, error) {
 	t := &Tunnel{
-		Resolver:     resolver,
+		Resolvers:    resolvers,
 		TunnelServer: tunnelServer,
 	}
 	t.wireConfig = tunnelServer.wireConfig()
@@ -293,7 +293,16 @@ func (t *Tunnel) effectiveKCPWindowSize() int {
 // InitiateResolverConnection creates the underlying transport connection
 // based on the Resolver configuration.
 func (t *Tunnel) InitiateResolverConnection() error {
-	r := t.Resolver
+	if len(t.Resolvers) > 1 {
+		conn, err := NewMultiResolver(t.Resolvers, SelectionRoundRobin, t.effectivePacketQueueSize(), t.effectiveQueueOverflowMode())
+		if err != nil {
+			return err
+		}
+		t.resolverConn = conn
+		t.remoteAddr = turbotunnel.DummyAddr{}
+		return nil
+	}
+	r := t.Resolvers[0]
 	switch r.ResolverType {
 	case ResolverTypeUDP:
 		addr, err := net.ResolveUDPAddr("udp", r.ResolverAddr)
@@ -589,6 +598,24 @@ func (t *Tunnel) closeTransportLayers() {
 	t.forgedStats = nil
 }
 
+// MultiResolverStats returns per-resolver health and count snapshots when the
+// active resolver transport is MultiResolver; otherwise it returns nil.
+func (t *Tunnel) MultiResolverStats() []ResolverStat {
+	if mr, ok := t.resolverConn.(*MultiResolver); ok {
+		return mr.ResolverStats()
+	}
+	return nil
+}
+
+// MultiResolverValidInvalidCounts returns valid/invalid counters per resolver
+// address when the active resolver transport is MultiResolver.
+func (t *Tunnel) MultiResolverValidInvalidCounts() map[string][2]int64 {
+	if mr, ok := t.resolverConn.(*MultiResolver); ok {
+		return mr.ValidInvalidCounts()
+	}
+	return nil
+}
+
 // resetTransportLayers tears down existing transport layers and creates fresh
 // ones. Used during reconnect to ensure a clean transport stack.
 func (t *Tunnel) resetTransportLayers() error {
@@ -882,10 +909,10 @@ func NewOutbound(resolvers []Resolver, tunnelServers []TunnelServer) *Outbound {
 // Start begins accepting connections on bind and forwarding them through the
 // first resolver/server pair.
 func (o *Outbound) Start(bind string) error {
-	resolver := o.Resolvers[0]
+
 	tunnelServer := o.TunnelServers[0]
 
-	tunnel, err := NewTunnel(resolver, tunnelServer)
+	tunnel, err := NewTunnel(o.Resolvers, tunnelServer)
 	if err != nil {
 		return fmt.Errorf("failed to create tunnel: %w", err)
 	}

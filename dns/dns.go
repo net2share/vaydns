@@ -47,8 +47,9 @@ var (
 
 const (
 	// https://tools.ietf.org/html/rfc1035#section-3.2.2
-	RRTypeA     = 1
-	RRTypeNS    = 2
+	RRTypeA  = 1
+	RRTypeNS = 2
+
 	RRTypeCNAME = 5
 	RRTypeMX    = 15
 	RRTypeTXT   = 16
@@ -66,6 +67,7 @@ const (
 	RcodeServerFailure  = 2 // a.k.a. SERVFAIL
 	RcodeNameError      = 3 // a.k.a. NXDOMAIN
 	RcodeNotImplemented = 4 // a.k.a. NOTIMPL
+	RcodeRefused        = 5 // a.k.a. REFUSED
 	// https://tools.ietf.org/html/rfc6891#section-9
 	ExtendedRcodeBadVers = 16 // a.k.a. BADVERS
 )
