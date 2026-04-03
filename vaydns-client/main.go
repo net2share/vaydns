@@ -20,6 +20,16 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type StringSliceFlag []string
+
+func (s *StringSliceFlag) String() string {
+	return fmt.Sprint(*s)
+}
+
+func (s *StringSliceFlag) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
 func readKeyFromFile(filename string) ([]byte, error) {
 	f, err := os.Open(filename)
 	if err != nil {
@@ -30,13 +40,13 @@ func readKeyFromFile(filename string) ([]byte, error) {
 }
 
 func main() {
-	var dohURL string
-	var dotAddr string
+	var dohURLs StringSliceFlag
+	var dotAddrs StringSliceFlag
 	var domainArg string
 	var listenAddr string
 	var pubkeyFilename string
 	var pubkeyString string
-	var udpAddr string
+	var udpAddrs StringSliceFlag
 	var utlsDistribution string
 	var maxQnameLen int
 	var maxNumLabels int
@@ -107,11 +117,11 @@ Known TLS fingerprints for -utls are:
 			fmt.Fprintln(flag.CommandLine.Output(), line.String())
 		}
 	}
-	flag.StringVar(&dohURL, "doh", "", "URL of DoH resolver")
-	flag.StringVar(&dotAddr, "dot", "", "address of DoT resolver")
+	flag.Var(&dohURLs, "doh", "URL of DoH resolver")
+	flag.Var(&dotAddrs, "dot", "address of DoT resolver")
 	flag.StringVar(&pubkeyString, "pubkey", "", fmt.Sprintf("server public key (%d hex digits)", noise.KeyLen*2))
 	flag.StringVar(&pubkeyFilename, "pubkey-file", "", "read server public key from file")
-	flag.StringVar(&udpAddr, "udp", "", "address of UDP DNS resolver")
+	flag.Var(&udpAddrs, "udp", "address of UDP DNS resolver")
 	flag.StringVar(&utlsDistribution, "utls",
 		"4*random,3*Firefox_120,1*Firefox_105,3*Chrome_120,1*Chrome_102,1*iOS_14,1*iOS_13",
 		"choose TLS fingerprint from weighted distribution")
@@ -201,32 +211,42 @@ Known TLS fingerprints for -utls are:
 	if utlsClientHelloID != nil {
 		log.Infof("uTLS fingerprint %s %s", utlsClientHelloID.Client, utlsClientHelloID.Version)
 	}
-
-	// Select resolver transport.
-	var resolverType client.ResolverType
-	var resolverAddr string
-	transportCount := 0
-	if dohURL != "" {
-		resolverType = client.ResolverTypeDOH
-		resolverAddr = dohURL
-		transportCount++
-	}
-	if dotAddr != "" {
-		resolverType = client.ResolverTypeDOT
-		resolverAddr = dotAddr
-		transportCount++
-	}
-	if udpAddr != "" {
-		resolverType = client.ResolverTypeUDP
-		resolverAddr = udpAddr
-		transportCount++
-	}
-	if transportCount == 0 {
-		fmt.Fprintf(os.Stderr, "one of -doh, -dot, or -udp is required\n")
+	udpTimeout, err := time.ParseDuration(udpTimeoutStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -udp-timeout: %v\n", err)
 		os.Exit(1)
 	}
-	if transportCount > 1 {
-		fmt.Fprintf(os.Stderr, "only one of -doh, -dot, and -udp may be given\n")
+	// Select resolver transport.
+	resolvers := make([]client.Resolver, 0)
+
+	for _, dohURL := range dohURLs {
+		resolver := client.Resolver{
+			ResolverType: client.ResolverTypeDOH,
+			ResolverAddr: dohURL,
+		}
+		resolver.UTLSClientHelloID = utlsClientHelloID
+		resolvers = append(resolvers, resolver)
+	}
+	for _, dotAddr := range dotAddrs {
+		resolvers = append(resolvers, client.Resolver{
+			ResolverType: client.ResolverTypeDOT,
+			ResolverAddr: dotAddr,
+		})
+	}
+	for _, udpAddr := range udpAddrs {
+		resolver := client.Resolver{
+			ResolverType: client.ResolverTypeUDP,
+			ResolverAddr: udpAddr,
+		}
+		resolver.UDPWorkers = udpWorkers
+		resolver.UDPSharedSocket = udpSharedSocket
+		resolver.UDPTimeout = udpTimeout
+		resolver.UDPAcceptErrors = udpAcceptErrors
+		resolvers = append(resolvers, resolver)
+	}
+
+	if len(resolvers) == 0 {
+		fmt.Fprintf(os.Stderr, "one of -doh, -dot, or -udp is required\n")
 		os.Exit(1)
 	}
 
@@ -259,11 +279,6 @@ Known TLS fingerprints for -utls are:
 	openStreamTimeout, err := time.ParseDuration(openStreamTimeoutStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid -open-stream-timeout: %v\n", err)
-		os.Exit(1)
-	}
-	udpTimeout, err := time.ParseDuration(udpTimeoutStr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "invalid -udp-timeout: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -339,16 +354,7 @@ Known TLS fingerprints for -utls are:
 	}
 
 	// Build resolver.
-	resolver, err := client.NewResolver(resolverType, resolverAddr)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "resolver: %v\n", err)
-		os.Exit(1)
-	}
-	resolver.UTLSClientHelloID = utlsClientHelloID
-	resolver.UDPWorkers = udpWorkers
-	resolver.UDPSharedSocket = udpSharedSocket
-	resolver.UDPTimeout = udpTimeout
-	resolver.UDPAcceptErrors = udpAcceptErrors
+
 	if udpAcceptErrors {
 		if udpSharedSocket {
 			log.Warnf("-udp-accept-errors has no effect when -udp-shared-socket is set")
@@ -371,7 +377,7 @@ Known TLS fingerprints for -utls are:
 	ts.RecordType = recordTypeStr
 
 	// Build tunnel.
-	tunnel, err := client.NewTunnel(resolver, ts)
+	tunnel, err := client.NewTunnel(resolvers, ts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
