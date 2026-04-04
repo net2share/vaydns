@@ -19,7 +19,7 @@ jobs:
           go-version: '1.24'
 
       - name: Build
-        run: CGO_ENABLED=0 go build -v ./...
+        run: CGO_ENABLED=0 go build -v -ldflags="-X main.version=${GITHUB_SHA::7}" ./...
 
       - name: Test
         run: go test -v ./...
@@ -70,8 +70,9 @@ jobs:
             ARCH="armv7"
           fi
           SUFFIX="${{ matrix.suffix }}"
-          go build -trimpath -ldflags="-s -w" -o "vaydns-client-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./vaydns-client
-          go build -trimpath -ldflags="-s -w" -o "vaydns-server-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./vaydns-server
+          VERSION="${GITHUB_SHA::7}"
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "vaydns-client-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./vaydns-client
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "vaydns-server-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./vaydns-server
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -119,5 +120,6 @@ jobs:
           context: .
           file: Dockerfile
           push: true
+          build-args: VERSION=dev-${{ env.SHORT_SHA }}
           tags: ghcr.io/${{ github.repository }}:dev-${{ env.SHORT_SHA }}
 

@@ -5,8 +5,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /vaydns-server ./vaydns-server
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /vaydns-client ./vaydns-client
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /vaydns-server ./vaydns-server
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /vaydns-client ./vaydns-client
 
 FROM alpine
 RUN apk add --no-cache curl

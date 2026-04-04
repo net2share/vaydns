@@ -20,6 +20,8 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+var version = "dev"
+
 func readKeyFromFile(filename string) ([]byte, error) {
 	f, err := os.Open(filename)
 	if err != nil {
@@ -30,6 +32,7 @@ func readKeyFromFile(filename string) ([]byte, error) {
 }
 
 func main() {
+	var showVersion bool
 	var dohURL string
 	var dotAddr string
 	var domainArg string
@@ -140,7 +143,13 @@ Known TLS fingerprints for -utls are:
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
+	flag.BoolVar(&showVersion, "v", false, "print version and exit")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	level, err := log.ParseLevel(logLevel)
 	if err != nil {

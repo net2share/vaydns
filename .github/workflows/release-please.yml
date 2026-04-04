@@ -78,8 +78,10 @@ jobs:
             ARCH="armv7"
           fi
           SUFFIX="${{ matrix.suffix }}"
-          go build -trimpath -ldflags="-s -w" -o "vaydns-client-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./vaydns-client
-          go build -trimpath -ldflags="-s -w" -o "vaydns-server-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./vaydns-server
+          TAG="${{ needs.release-please.outputs.tag_name }}"
+          VERSION="${TAG#v}"
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "vaydns-client-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./vaydns-client
+          go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o "vaydns-server-${{ matrix.goos }}-${ARCH}${SUFFIX}" ./vaydns-server
           chmod +x vaydns-client-* vaydns-server-*
 
       - name: Upload artifact
@@ -148,6 +150,7 @@ jobs:
           context: .
           file: Dockerfile
           push: true
+          build-args: VERSION=${{ steps.version.outputs.VERSION }}
           tags: |
             ghcr.io/${{ github.repository }}:${{ steps.version.outputs.VERSION }}
             ghcr.io/${{ github.repository }}:latest

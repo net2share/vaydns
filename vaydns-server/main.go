@@ -1194,7 +1194,10 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 	return recvLoop(domain, dnsConn, ttConn, ch, fallbackMgr, stats, wireConfig)
 }
 
+var version = "dev"
+
 func main() {
+	var showVersion bool
 	var genKey bool
 	var domainArg string
 	var upstream string
@@ -1250,7 +1253,13 @@ Example:
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
+	flag.BoolVar(&showVersion, "v", false, "print version and exit")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
 	level, err := log.ParseLevel(logLevel)
 	if err != nil {
