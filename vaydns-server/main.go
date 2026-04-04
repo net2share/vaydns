@@ -79,8 +79,10 @@ const (
 	// indefinitely and consume server resources.
 	defaultHandshakeTimeout = 15 * time.Second
 
-	// How to set the TTL field in Answer resource records.
-	responseTTL = 60
+	// Default TTL for Answer resource records.
+	defaultResponseTTL = 60
+	// Maximum TTL for Answer resource records.
+	maxResponseTTL = 2 * 60 * 60
 
 	// How long we may wait for downstream data before sending an empty
 	// response. If another query comes in while we are waiting, we'll send
@@ -118,6 +120,10 @@ var (
 	// recordType is the DNS record type used for downstream data encoding.
 	// Set from the -record-type command-line flag.
 	recordType uint16 = dns.RRTypeTXT
+
+	// responseTTL is the TTL applied to Answer resource records.
+	// Set from the -ttl command-line flag.
+	responseTTL = defaultResponseTTL
 )
 
 // base32Encoding is a base32 encoding without padding.
@@ -774,7 +780,7 @@ func encodeResponsePayload(rec *record, data []byte, domain dns.Name) error {
 				Name:  rec.Resp.Question[0].Name,
 				Type:  qtype,
 				Class: rec.Resp.Question[0].Class,
-				TTL:   responseTTL,
+				TTL:   uint32(responseTTL),
 				Data:  chunk,
 			}
 		}
@@ -837,7 +843,7 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 					Name:  rec.Resp.Question[0].Name,
 					Type:  rec.Resp.Question[0].Type,
 					Class: rec.Resp.Question[0].Class,
-					TTL:   responseTTL,
+					TTL:   uint32(responseTTL),
 					Data:  nil, // will be filled in below
 				},
 			}
@@ -1003,7 +1009,7 @@ func computeMaxEncodedPayload(limit int) int {
 			Name:  query.Question[0].Name,
 			Type:  query.Question[0].Type,
 			Class: query.Question[0].Class,
-			TTL:   responseTTL,
+			TTL:   uint32(responseTTL),
 			Data:  nil, // will be filled in below
 		},
 	}
@@ -1099,7 +1105,7 @@ func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int) int {
 				Name:  query.Question[0].Name,
 				Type:  query.Question[0].Type,
 				Class: query.Question[0].Class,
-				TTL:   responseTTL,
+				TTL:   uint32(responseTTL),
 				Data:  make([]byte, chunkSize),
 			}
 		}
@@ -1211,6 +1217,7 @@ func main() {
 	var compatDnstt bool
 	var clientIDSize int
 	var recordTypeStr string
+	var ttl int
 	var queueSize int
 	var kcpWindowSize int
 	var queueOverflowStr string
@@ -1247,6 +1254,7 @@ Example:
 	flag.BoolVar(&compatDnstt, "dnstt-compat", false, "use original dnstt wire format (8-byte ClientID, padding prefixes)")
 	flag.IntVar(&clientIDSize, "clientid-size", 2, "client ID size in bytes (ignored when -dnstt-compat is set)")
 	flag.StringVar(&recordTypeStr, "record-type", "txt", "DNS record type for downstream data (txt, cname, a, aaaa, mx, ns, srv)")
+	flag.IntVar(&ttl, "ttl", defaultResponseTTL, fmt.Sprintf("TTL for DNS Answer resource records in seconds (0-%d)", maxResponseTTL))
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for DNS tunnel transport")
 	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
 	flag.StringVar(&queueOverflowStr, "queue-overflow", string(turbotunnel.DefaultQueueOverflowMode), "queue overflow behavior: drop or block")
@@ -1275,10 +1283,15 @@ Example:
 		os.Exit(1)
 	}
 	recordType = rt
+	if ttl < 0 || ttl > maxResponseTTL {
+		fmt.Fprintf(os.Stderr, "-ttl (%d) must be between 0 and %d seconds\n", ttl, maxResponseTTL)
+		os.Exit(1)
+	}
+	responseTTL = ttl
 
 	if genKey {
 		// -gen-key mode.
-		if flag.NArg() != 0 || privkeyString != "" || udpAddr != "" || fallbackAddrString != "" || domainArg != "" || upstream != "" || idleTimeoutStr != defaultIdleTimeout.String() || keepAliveStr != defaultKeepAlive.String() {
+		if flag.NArg() != 0 || privkeyString != "" || udpAddr != "" || fallbackAddrString != "" || domainArg != "" || upstream != "" || idleTimeoutStr != defaultIdleTimeout.String() || keepAliveStr != defaultKeepAlive.String() || ttl != defaultResponseTTL {
 			flag.Usage()
 			os.Exit(1)
 		}
@@ -1428,6 +1441,7 @@ Example:
 			os.Exit(1)
 		}
 		log.Infof("transport config: queue-size=%d kcp-window-size=%d queue-overflow=%s", queueSize, kcpWindowSize, queueOverflowMode)
+		log.Infof("response config: ttl=%d", responseTTL)
 
 		var wireConfig turbotunnel.WireConfig
 		if compatDnstt {
