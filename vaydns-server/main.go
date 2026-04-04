@@ -421,6 +421,11 @@ func nextPacketDnstt(r *bytes.Reader) ([]byte, error) {
 // this query. If the returned dns.Message has an Rcode() of dns.RcodeNoError,
 // the message is a candidate for for carrying downstream data in a TXT record.
 func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
+	responsePayloadSize := uint16(maxUDPPayload)
+	if int(responsePayloadSize) != maxUDPPayload {
+		responsePayloadSize = 0xffff
+	}
+
 	resp := &dns.Message{
 		ID:       query.ID,
 		Flags:    0x8000, // QR = 1, RCODE = no error
@@ -455,7 +460,7 @@ func responseFor(query *dns.Message, domain dns.Name) (*dns.Message, []byte) {
 		resp.Additional = append(resp.Additional, dns.RR{
 			Name:  dns.Name{},
 			Type:  dns.RRTypeOPT,
-			Class: 4096, // responder's UDP payload size
+			Class: responsePayloadSize, // responder's UDP payload size
 			TTL:   0,
 			Data:  []byte{},
 		})
@@ -1461,7 +1466,8 @@ Example:
 		}
 		log.Infof("wire config: clientid-size=%d compat=%v", wireConfig.ClientIDSize, wireConfig.Compat)
 
-		if recordType != dns.RRTypeTXT {
+		switch recordType {
+		case dns.RRTypeCNAME, dns.RRTypeNS, dns.RRTypeMX, dns.RRTypeSRV:
 			explicitFlags := make(map[string]bool)
 			flag.Visit(func(f *flag.Flag) {
 				explicitFlags[f.Name] = true
