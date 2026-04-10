@@ -50,10 +50,12 @@ const (
 	RRTypeA     = 1
 	RRTypeNS    = 2
 	RRTypeCNAME = 5
+	RRTypeNULL  = 10
 	RRTypeMX    = 15
 	RRTypeTXT   = 16
 	RRTypeAAAA  = 28
 	RRTypeSRV   = 33
+	RRTypeCAA   = 257
 	// https://tools.ietf.org/html/rfc6891#section-6.1.1
 	RRTypeOPT = 41
 
@@ -78,6 +80,8 @@ func ParseRecordType(s string) (uint16, error) {
 		return RRTypeTXT, nil
 	case "cname":
 		return RRTypeCNAME, nil
+	case "null":
+		return RRTypeNULL, nil
 	case "a":
 		return RRTypeA, nil
 	case "aaaa":
@@ -88,8 +92,10 @@ func ParseRecordType(s string) (uint16, error) {
 		return RRTypeNS, nil
 	case "srv":
 		return RRTypeSRV, nil
+	case "caa":
+		return RRTypeCAA, nil
 	default:
-		return 0, fmt.Errorf("unknown record type %q: must be one of: txt, cname, a, aaaa, mx, ns, srv", s)
+		return 0, fmt.Errorf("unknown record type %q: must be one of: txt, cname, null, a, aaaa, mx, ns, srv, caa", s)
 	}
 }
 
@@ -690,6 +696,40 @@ func EncodeRDataTXT(p []byte) []byte {
 	buf.WriteByte(byte(len(p)))
 	buf.Write(p)
 	return buf.Bytes()
+}
+
+// DecodeRDataNULL decodes NULL RDATA as a raw byte slice.
+// https://tools.ietf.org/html/rfc1035#section-3.3.10
+func DecodeRDataNULL(p []byte) ([]byte, error) { return p, nil }
+
+// EncodeRDataNULL encodes a slice of bytes as NULL RDATA.
+// https://tools.ietf.org/html/rfc1035#section-3.3.10
+func EncodeRDataNULL(p []byte) []byte { return p }
+
+// DecodeRDataCAA decodes CAA RDATA and returns the value portion.
+// https://datatracker.ietf.org/doc/html/rfc8659
+func DecodeRDataCAA(p []byte) ([]byte, error) {
+	if len(p) < 2 {
+		return nil, io.ErrUnexpectedEOF
+	}
+	tagLen := int(p[1])
+	p = p[2:]
+	if len(p) < tagLen {
+		return nil, io.ErrUnexpectedEOF
+	}
+	return p[tagLen:], nil
+}
+
+// EncodeRDataCAA encodes a slice of bytes as CAA RDATA using a fixed
+// "issue" tag so the payload lives entirely in the value portion.
+// https://datatracker.ietf.org/doc/html/rfc8659
+func EncodeRDataCAA(p []byte) []byte {
+	const tag = "issue"
+	rdata := make([]byte, 2+len(tag)+len(p))
+	rdata[1] = byte(len(tag))
+	copy(rdata[2:], tag)
+	copy(rdata[2+len(tag):], p)
+	return rdata
 }
 
 // base32Encoding is a base32 encoding without padding, used for CNAME RDATA.

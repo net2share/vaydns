@@ -135,7 +135,7 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-fallback ADDR`     | UDP endpoint to forward non-DNS packets to (e.g. `127.0.0.1:8888`) | —          |
 | `-dnstt-compat`      | Use original dnstt wire format (8-byte ClientID, padding prefixes). Also sets `-idle-timeout` to 2m and `-keepalive` to 10s unless explicitly overridden. | `false`    |
 | `-clientid-size N`   | ClientID size in bytes (ignored when `-dnstt-compat` is set)       | `2`        |
-| `-record-type TYPE`  | DNS record type for downstream data: `txt`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`. Must match the client. Ignored (forced to `txt`) when `-dnstt-compat` is set. | `txt`      |
+| `-record-type TYPE`  | DNS record type for downstream data: `txt`, `null`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `caa`. Must match the client. Ignored (forced to `txt`) when `-dnstt-compat` is set. | `txt`      |
 | `-queue-size N`      | Packet queue size for transport and DNS layers                    | `512`      |
 | `-kcp-window-size N` | KCP send/receive window size in packets (0 = queue-size/2)        | `0`        |
 | `-queue-overflow MODE` | Queue overflow behavior: `drop` (silent discard) or `block` (backpressure) | `drop`     |
@@ -224,7 +224,7 @@ These reduce upstream throughput but improve compatibility. The minimum effectiv
 | `-rps N`           | Rate limit outgoing DNS queries per second (0 = unlimited). Uses a token bucket with 1-second burst allowance. | `0`             |
 | `-dnstt-compat`    | Use original dnstt wire format (8-byte ClientID, padding prefixes). Sets `-max-qname-len` to 253 unless explicitly overridden. Forces `-record-type` to `txt` with a warning if another type is set. | `false`         |
 | `-clientid-size N` | ClientID size in bytes (ignored when `-dnstt-compat` is set) | `2`             |
-| `-record-type TYPE` | DNS record type for downstream data: `txt`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`. Must match the server. | `txt`           |
+| `-record-type TYPE` | DNS record type for downstream data: `txt`, `null`, `cname`, `a`, `aaaa`, `mx`, `ns`, `srv`, `caa`. Must match the server. | `txt`           |
 | `-utls SPEC`       | TLS fingerprint distribution (see below)                   | weighted random |
 | `-log-level LEVEL` | Log level: debug, info, warning, error                     | `info`          |
 
@@ -408,12 +408,14 @@ VayDNS supports multiple DNS record types for downstream data encoding. Both cli
 | Type | Description | Capacity |
 | ---- | ----------- | -------- |
 | `txt` | TXT record (default). Highest capacity, compatible with dnstt. | Bounded by UDP payload (~1200 bytes) |
+| `null` | NULL record. Raw binary payload in a single RR. | Bounded by UDP payload |
 | `cname` | CNAME record. Data encoded as a DNS name under the tunnel domain. | Bounded by 255-byte DNS name limit |
 | `ns` | NS record. Same encoding as CNAME. | Same as CNAME |
 | `mx` | MX record. 2-byte preference header + name encoding. | Same as CNAME |
 | `srv` | SRV record. 6-byte header + name encoding. | Same as CNAME |
 | `a` | A records. Data split into 4-byte chunks across multiple answer RRs. | Bounded by UDP payload |
 | `aaaa` | AAAA records. Data split into 16-byte chunks across multiple answer RRs. | Bounded by UDP payload |
+| `caa` | CAA record. Payload encoded in the value portion of a fixed `issue` property. | Bounded by UDP payload |
 
 > **Compatibility:** Old VayDNS clients (pre-record-type) only send TXT queries. A new server with the default `-record-type txt` is fully compatible with old clients. Using a non-TXT type requires updating both client and server.
 

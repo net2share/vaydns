@@ -150,8 +150,8 @@ func forgedInfoMilestone(total uint64) bool {
 
 // DNSPacketConn provides a packet-sending and -receiving interface over various
 // forms of DNS. It handles the details of how packets and padding are encoded
-// as a DNS name in the Question section of an upstream query, and as a TXT RR
-// in downstream responses.
+// as a DNS name in the Question section of an upstream query, and as an RR in
+// downstream responses.
 //
 // DNSPacketConn does not handle the mechanics of actually sending and receiving
 // encoded DNS messages. That is rather the responsibility of some other
@@ -166,7 +166,8 @@ type DNSPacketConn struct {
 	clientID   turbotunnel.ClientID
 	wireConfig turbotunnel.WireConfig
 	domain     dns.Name
-	// rrType is the DNS record type used for downstream data (TXT, CNAME, A, AAAA, MX, NS, or SRV).
+	// rrType is the DNS record type used for downstream data (TXT, NULL, CNAME,
+	// A, AAAA, MX, NS, SRV, or CAA).
 	rrType uint16
 	// Sending on pollChan permits sendLoop to send an empty polling query.
 	// sendLoop also does its own polling according to a time schedule.
@@ -259,11 +260,10 @@ func (c *DNSPacketConn) TransportErrors() <-chan error {
 	return c.transportErr
 }
 
-// dnsResponsePayload extracts the downstream payload of a DNS response, encoded
-// into the RDATA of a TXT or CNAME RR. It returns (nil, true) when the response
-// has a non-NoError RCODE, indicating a forged or hijacked response. It returns
-// (payload, false) on success or (nil, false) when the response doesn't pass
-// format checks.
+// dnsResponsePayload extracts the downstream payload of a DNS response. It
+// returns (nil, true) when the response has a non-NoError RCODE, indicating a
+// forged or hijacked response. It returns (payload, false) on success or
+// (nil, false) when the response doesn't pass format checks.
 func dnsResponsePayload(resp *dns.Message, domain dns.Name, rrType uint16) ([]byte, bool) {
 	if resp.Flags&0x8000 != 0x8000 {
 		// QR != 1, this is not a response.
@@ -318,6 +318,10 @@ func dnsResponsePayload(resp *dns.Message, domain dns.Name, rrType uint16) ([]by
 	var payload []byte
 	var err error
 	switch rrType {
+	case dns.RRTypeNULL:
+		payload, err = dns.DecodeRDataNULL(answer.Data)
+	case dns.RRTypeCAA:
+		payload, err = dns.DecodeRDataCAA(answer.Data)
 	case dns.RRTypeCNAME:
 		payload, err = dns.DecodeRDataCNAME(answer.Data, domain)
 	case dns.RRTypeNS:
