@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.8](https://github.com/net2share/vaydns/compare/v0.2.7...v0.2.8) (2026-04-10)
+
+
+### Features
+
+* add -v flag for printing version ([#71](https://github.com/net2share/vaydns/issues/71)) ([3533148](https://github.com/net2share/vaydns/commit/35331484bce1b628372dc37accae4e96b507841f))
+* add NULL and CAA record type support and fix server EDNS mtu advertisement ([#70](https://github.com/net2share/vaydns/issues/70)) ([8354db2](https://github.com/net2share/vaydns/commit/8354db2a080ce9543594bc4e71592f33e6489d82))
+
 ## [0.2.7](https://github.com/net2share/vaydns/compare/v0.2.6...v0.2.7) (2026-04-01)
 
 
