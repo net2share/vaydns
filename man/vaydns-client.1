@@ -164,12 +164,25 @@ with
 Maximum concurrent streams per session.
 0 means unlimited.
 Default:
-.Cm 256 .
+.Cm 0 .
 
 .It Fl open-stream-timeout Ar DURATION
 Timeout for opening an smux stream.
 Default:
 .Cm 10s .
+
+.It Fl session-check-interval Ar DURATION
+How often the managed client checks whether the current session and
+transport are still healthy.
+Default:
+.Cm 500ms .
+
+.It Fl open-stream-failure-limit Ar N
+Retire an idle session after
+.Ar N
+consecutive stream-open failures.
+Default:
+.Cm 3 .
 
 .It Fl reconnect-min Ar DURATION
 Initial backoff delay before retrying session creation.
@@ -226,7 +239,32 @@ Only applies when using
 without
 .Fl udp-shared-socket .
 Default:
-.Cm 400ms .
+.Cm 500ms .
+
+.It Fl poll-delay Ar DURATION
+Base delay before sending an empty DNS poll when idle.
+Default:
+.Cm 500ms .
+
+.It Fl active-poll-delay Ar DURATION
+Polling delay cap while streams are active or being opened.
+Default:
+.Cm 200ms .
+
+.It Fl poll-max-delay Ar DURATION
+Maximum idle backoff between empty DNS polls.
+Default:
+.Cm 2s .
+
+.It Fl udp-transport-stale-timeout Ar DURATION
+Retire the current session if per-query UDP sees no valid response for
+this long while streams need transport.
+Only applies when using
+.Fl udp
+without
+.Fl udp-shared-socket .
+Default:
+.Cm 3s .
 
 .It Fl udp-shared-socket
 Use a single shared UDP socket instead of per-query sockets.
@@ -290,10 +328,30 @@ Ignored when
 .Fl dnstt-compat
 is set.
 
+.It Fl queue-size Ar N
+Packet queue size for the transport and DNS layers.
+Default:
+.Cm 512 .
+
+.It Fl kcp-window-size Ar N
+KCP send and receive window size in packets.
+0 means half of
+.Fl queue-size .
+Default:
+.Cm 0 .
+
+.It Fl queue-overflow Ar MODE
+Queue overflow behavior:
+.Cm drop
+or
+.Cm block .
+Default:
+.Cm drop .
+
 .It Fl log-level Ar LEVEL
 Log level: debug, info, warning, error.
 Default:
-.Cm warning .
+.Cm info .
 
 .El
 

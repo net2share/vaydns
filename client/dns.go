@@ -27,13 +27,10 @@ const (
 
 	// sendLoop has a poll timer that automatically sends an empty polling
 	// query when a certain amount of time has elapsed without a send. The
-	// poll timer is initially set to initPollDelay. It increases by a
-	// factor of pollDelayMultiplier every time the poll timer expires, up
-	// to a maximum of maxPollDelay. The poll timer is reset to
-	// initPollDelay whenever an a send occurs that is not the result of the
-	// poll timer expiring.
-	initPollDelay       = 500 * time.Millisecond
-	maxPollDelay        = 10 * time.Second
+	// poll timer starts at pollDelay, increases by pollDelayMultiplier on
+	// idle expirations, and is capped at pollMaxDelay. When there are
+	// active tunnel streams, we instead use activePollDelay both as the
+	// reset value and as the cap so downstream data keeps flowing quickly.
 	pollDelayMultiplier = 2.0
 
 	// A limit on the number of empty poll requests we may send in a burst
@@ -65,9 +62,14 @@ func NewRateLimiter(rps float64) *RateLimiter {
 	if rps <= 0 || math.IsNaN(rps) || math.IsInf(rps, 0) {
 		return nil
 	}
+	capacity := rps
+	if capacity < 1.0 {
+		// A fractional rate still needs to be able to accumulate one whole token.
+		capacity = 1.0
+	}
 	return &RateLimiter{
-		tokens:   rps,
-		capacity: rps,
+		tokens:   capacity,
+		capacity: capacity,
 		rate:     rps,
 		lastTime: time.Now(),
 	}
@@ -180,6 +182,13 @@ type DNSPacketConn struct {
 	maxNumLabels int
 	// Forged response tracking (shared with UDPPacketConn in per-query mode)
 	forgedStats *ForgedStats
+	// activeStreams is incremented while stream establishment or stream I/O is
+	// in progress. When positive, sendLoop keeps polling aggressively instead
+	// of backing off to the idle maximum.
+	activeStreams   *atomic.Int32
+	pollDelay       time.Duration
+	activePollDelay time.Duration
+	pollMaxDelay    time.Duration
 	// Transport error reporting for session health monitoring
 	transportErr chan error
 	// QueuePacketConn is the direct receiver of ReadFrom and WriteTo calls.
@@ -197,8 +206,26 @@ type DNSPacketConn struct {
 // forgedStats is shared with the transport layer (e.g. UDPPacketConn) for
 // consistent forged response tracking; if nil, a new instance is created.
 func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16, queueSize int, overflowMode turbotunnel.QueueOverflowMode) *DNSPacketConn {
+	return newDNSPacketConn(transport, addr, domain, rateLimiter, maxQnameLen, maxNumLabels, wireConfig, forgedStats, rrType, nil, DefaultPollDelay, DefaultActivePollDelay, DefaultPollMaxDelay, queueSize, overflowMode)
+}
+
+// newDNSPacketConn is the internal constructor that can optionally receive a
+// pointer to the active stream counter for stream-aware polling.
+func newDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, rateLimiter *RateLimiter, maxQnameLen int, maxNumLabels int, wireConfig turbotunnel.WireConfig, forgedStats *ForgedStats, rrType uint16, activeStreams *atomic.Int32, pollDelay time.Duration, activePollDelay time.Duration, pollMaxDelay time.Duration, queueSize int, overflowMode turbotunnel.QueueOverflowMode) *DNSPacketConn {
 	if maxQnameLen <= 0 || maxQnameLen > 253 {
 		maxQnameLen = 253
+	}
+	if pollDelay <= 0 {
+		pollDelay = DefaultPollDelay
+	}
+	if activePollDelay <= 0 {
+		activePollDelay = DefaultActivePollDelay
+	}
+	if pollMaxDelay <= 0 {
+		pollMaxDelay = DefaultPollMaxDelay
+	}
+	if pollMaxDelay < pollDelay {
+		pollMaxDelay = pollDelay
 	}
 	if forgedStats == nil {
 		forgedStats = &ForgedStats{}
@@ -218,6 +245,10 @@ func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 		maxQnameLen:     maxQnameLen,
 		maxNumLabels:    maxNumLabels,
 		forgedStats:     forgedStats,
+		activeStreams:   activeStreams,
+		pollDelay:       pollDelay,
+		activePollDelay: activePollDelay,
+		pollMaxDelay:    pollMaxDelay,
 		transportErr:    make(chan error, 2),
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(clientID, 0, queueSize, overflowMode),
 	}
@@ -258,6 +289,20 @@ func NewDNSPacketConn(transport net.PacketConn, addr net.Addr, domain dns.Name, 
 // underlying transport goroutines (recvLoop and sendLoop).
 func (c *DNSPacketConn) TransportErrors() <-chan error {
 	return c.transportErr
+}
+
+func (c *DNSPacketConn) currentPollDelay() time.Duration {
+	if c.activeStreams != nil && c.activeStreams.Load() > 0 {
+		return c.activePollDelay
+	}
+	return c.pollDelay
+}
+
+func (c *DNSPacketConn) currentPollMaxDelay() time.Duration {
+	if c.activeStreams != nil && c.activeStreams.Load() > 0 {
+		return c.activePollDelay
+	}
+	return c.pollMaxDelay
 }
 
 // dnsResponsePayload extracts the downstream payload of a DNS response. It
@@ -559,7 +604,7 @@ func (c *DNSPacketConn) send(transport net.PacketConn, p []byte, addr net.Addr) 
 // on the network using send. It also does polling with empty packets when
 // requested by pollChan or after a timeout.
 func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error {
-	pollDelay := initPollDelay
+	pollDelay := c.currentPollDelay()
 	pollTimer := time.NewTimer(pollDelay)
 	defer pollTimer.Stop()
 	outgoing := c.QueuePacketConn.OutgoingQueue(addr)
@@ -597,8 +642,9 @@ func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error 
 			// We're polling because it's been a while since we last
 			// polled. Increase the poll delay.
 			pollDelay = time.Duration(float64(pollDelay) * pollDelayMultiplier)
-			if pollDelay > maxPollDelay {
-				pollDelay = maxPollDelay
+			currentMaxPollDelay := c.currentPollMaxDelay()
+			if pollDelay > currentMaxPollDelay {
+				pollDelay = currentMaxPollDelay
 			}
 		} else {
 			// We're sending an actual data packet, or we're polling
@@ -607,7 +653,7 @@ func (c *DNSPacketConn) sendLoop(transport net.PacketConn, addr net.Addr) error 
 			if !pollTimer.Stop() {
 				<-pollTimer.C
 			}
-			pollDelay = initPollDelay
+			pollDelay = c.currentPollDelay()
 		}
 		pollTimer.Reset(pollDelay)
 

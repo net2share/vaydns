@@ -75,22 +75,18 @@ import (
 const (
 	defaultIdleTimeout = 10 * time.Second
 	defaultKeepAlive   = 2 * time.Second
+	// Keep this comfortably below the default client UDP response timeout and
+	// low enough for interactive traffic. Long batching delays are acceptable
+	// for bulk transfer but make chat and proxy workloads feel broken.
+	defaultResponseDelay     = 200 * time.Millisecond
+	defaultResponseWorkers   = 2
+	defaultResponseQueueSize = 0
 	// Bound the pre-smux handshake so half-open KCP sessions cannot linger
 	// indefinitely and consume server resources.
 	defaultHandshakeTimeout = 15 * time.Second
 
 	// How to set the TTL field in Answer resource records.
 	responseTTL = 60
-
-	// How long we may wait for downstream data before sending an empty
-	// response. If another query comes in while we are waiting, we'll send
-	// an empty response anyway and restart the delay timer for the next
-	// response.
-	//
-	// This number should be less than 2 seconds, which in 2019 was reported
-	// to be the query timeout of the Quad9 DoH server.
-	// https://dnsencryption.info/imc19-doe.html Section 4.2, Finding 2.4
-	maxResponseDelay = 1 * time.Second
 
 	// How long to wait for a TCP connection to upstream to be established.
 	upstreamDialTimeout = 30 * time.Second
@@ -125,16 +121,19 @@ var base32Encoding = base32.StdEncoding.WithPadding(base32.NoPadding)
 
 // ServerStats tracks query processing statistics.
 type ServerStats struct {
-	total   uint64
-	success uint64
+	total           uint64
+	success         uint64
+	responseDropped uint64
 }
 
-func (s *ServerStats) incTotal()   { atomic.AddUint64(&s.total, 1) }
-func (s *ServerStats) incSuccess() { atomic.AddUint64(&s.success, 1) }
+func (s *ServerStats) incTotal()           { atomic.AddUint64(&s.total, 1) }
+func (s *ServerStats) incSuccess()         { atomic.AddUint64(&s.success, 1) }
+func (s *ServerStats) incResponseDropped() { atomic.AddUint64(&s.responseDropped, 1) }
 func (s *ServerStats) log() {
 	total := atomic.LoadUint64(&s.total)
 	success := atomic.LoadUint64(&s.success)
-	log.Debugf("stats | total: %d | success: %d", total, success)
+	responseDropped := atomic.LoadUint64(&s.responseDropped)
+	log.Debugf("stats | total: %d | success: %d | response_dropped: %d", total, success, responseDropped)
 }
 
 // generateKeypair generates a private key and the corresponding public key. If
@@ -236,6 +235,9 @@ func handleStream(stream *smux.Stream, upstream string, conv uint32) error {
 	}
 	defer upstreamConn.Close()
 	upstreamTCPConn := upstreamConn.(*net.TCPConn)
+	if err := upstreamTCPConn.SetNoDelay(true); err != nil {
+		log.Debugf("stream %08x:%d upstream TCP_NODELAY: %v", conv, stream.ID(), err)
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -338,8 +340,10 @@ func acceptSessions(ln *kcp.Listener, privkey []byte, mtu int, upstream string, 
 		log.Infof("session %08x ready", conn.GetConv())
 		// Permit coalescing the payloads of consecutive sends.
 		conn.SetStreamMode(true)
-		// Disable the dynamic congestion window (limit only by the
-		// maximum of local and remote static windows).
+		// Keep the congestion window disabled, but otherwise stay on KCP's
+		// conservative timing. The DNS layer itself is the real pacing
+		// bottleneck on shutdown paths; pushing KCP harder mostly creates
+		// extra churn.
 		conn.SetNoDelay(
 			0, // default nodelay
 			0, // default interval
@@ -562,6 +566,18 @@ type record struct {
 	ClientID turbotunnel.ClientID
 }
 
+func enqueueResponse(ch chan *record, rec *record, stats *ServerStats) bool {
+	select {
+	case ch <- rec:
+		return true
+	default:
+		if stats != nil {
+			stats.incResponseDropped()
+		}
+		return false
+	}
+}
+
 // --- Fallback NAT logic for non-DNS packets ---
 
 // UDPAddrKey is a comparable struct that can be used as a map key to represent
@@ -693,7 +709,7 @@ func (m *FallbackManager) forwardReplies(proxyConn net.PacketConn, clientAddr ne
 // the incoming DNS queries, and puts them on ttConn's incoming queue. Whenever
 // a query calls for a response, constructs a partial response and passes it to
 // sendLoop over ch. Invalid DNS packets are passed to the FallbackManager.
-func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch chan<- *record, fallbackMgr *FallbackManager, stats *ServerStats, wireConfig turbotunnel.WireConfig) error {
+func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch chan *record, fallbackMgr *FallbackManager, stats *ServerStats, wireConfig turbotunnel.WireConfig) error {
 	for {
 		var buf [4096]byte
 		n, addr, err := dnsConn.ReadFrom(buf[:])
@@ -750,12 +766,8 @@ func recvLoop(domain dns.Name, dnsConn net.PacketConn, ttConn *turbotunnel.Queue
 		}
 		// If a response is called for, pass it to sendLoop via the channel.
 		if resp != nil {
-			if resp.Rcode() == dns.RcodeNoError {
+			if enqueueResponse(ch, &record{resp, addr, clientID}, stats) && resp.Rcode() == dns.RcodeNoError {
 				stats.incSuccess()
-			}
-			select {
-			case ch <- &record{resp, addr, clientID}:
-			default:
 			}
 		}
 	}
@@ -821,7 +833,7 @@ func encodeResponsePayload(rec *record, data []byte, domain dns.Name) error {
 // response, it sends on the network immediately. Those that represent a
 // response capable of carrying data, it packs full of as many packets as will
 // fit while keeping the total size under maxEncodedPayload, then sends it.
-func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int, domain dns.Name) error {
+func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-chan *record, maxEncodedPayload int, responseDelay time.Duration, domain dns.Name) error {
 	var nextRec *record
 	for {
 		rec := nextRec
@@ -857,7 +869,7 @@ func sendLoop(dnsConn net.PacketConn, ttConn *turbotunnel.QueuePacketConn, ch <-
 			// into the response as will fit. Any packet that would
 			// overflow the capacity of the DNS response, we stash
 			// to be bundled into a future response.
-			timer := time.NewTimer(maxResponseDelay)
+			timer := time.NewTimer(responseDelay)
 			for {
 				var p []byte
 				unstash := ttConn.Unstash(rec.ClientID)
@@ -1125,7 +1137,7 @@ func computeMaxEncodedPayloadMultiRR(limit int, chunkSize int) int {
 	return low
 }
 
-func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration, queueSize int, kcpWindowSize int, queueOverflowMode turbotunnel.QueueOverflowMode, wireConfig turbotunnel.WireConfig) error {
+func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketConn, fallbackAddr *net.UDPAddr, idleTimeout time.Duration, keepAlive time.Duration, queueSize int, kcpWindowSize int, queueOverflowMode turbotunnel.QueueOverflowMode, responseQueueSize int, responseWorkers int, responseDelay time.Duration, wireConfig turbotunnel.WireConfig) error {
 	defer dnsConn.Close()
 
 	log.Infof("pubkey %x", noise.PubkeyFromPrivkey(privkey))
@@ -1176,7 +1188,17 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 		}
 	}()
 
-	ch := make(chan *record, 100)
+	if responseQueueSize <= 0 {
+		responseQueueSize = queueSize
+	}
+	if responseWorkers <= 0 {
+		responseWorkers = defaultResponseWorkers
+	}
+	if responseDelay <= 0 {
+		responseDelay = defaultResponseDelay
+	}
+
+	ch := make(chan *record, responseQueueSize)
 	defer close(ch)
 
 	// Create a fallback manager if an address is specified.
@@ -1194,15 +1216,14 @@ func run(privkey []byte, domain dns.Name, upstream string, dnsConn net.PacketCon
 		}
 	}()
 
-	// We could run multiple copies of sendLoop; that would allow more time
-	// for each response to collect downstream data before being evicted by
-	// another response that needs to be sent.
-	go func() {
-		err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload, domain)
-		if err != nil {
-			log.Warnf("sendLoop: %v", err)
-		}
-	}()
+	for i := 0; i < responseWorkers; i++ {
+		go func() {
+			err := sendLoop(dnsConn, ttConn, ch, maxEncodedPayload, responseDelay, domain)
+			if err != nil {
+				log.Warnf("sendLoop: %v", err)
+			}
+		}()
+	}
 
 	return recvLoop(domain, dnsConn, ttConn, ch, fallbackMgr, stats, wireConfig)
 }
@@ -1227,6 +1248,9 @@ func main() {
 	var queueSize int
 	var kcpWindowSize int
 	var queueOverflowStr string
+	var responseQueueSize int
+	var responseWorkers int
+	var responseDelayStr string
 
 	flag.Usage = func() {
 		fmt.Fprintf(flag.CommandLine.Output(), `Usage:
@@ -1263,6 +1287,9 @@ Example:
 	flag.IntVar(&queueSize, "queue-size", turbotunnel.QueueSize, "packet queue size for DNS tunnel transport")
 	flag.IntVar(&kcpWindowSize, "kcp-window-size", 0, "KCP send/receive window size in packets (0 = queue-size/2)")
 	flag.StringVar(&queueOverflowStr, "queue-overflow", string(turbotunnel.DefaultQueueOverflowMode), "queue overflow behavior: drop or block")
+	flag.IntVar(&responseQueueSize, "response-queue-size", defaultResponseQueueSize, "pending DNS response queue size (0 = queue-size)")
+	flag.IntVar(&responseWorkers, "response-workers", defaultResponseWorkers, "number of DNS response sender workers")
+	flag.StringVar(&responseDelayStr, "response-delay", defaultResponseDelay.String(), "maximum time to hold a DNS response open for downstream data (e.g. 100ms, 200ms)")
 
 	var logLevel string
 	flag.StringVar(&logLevel, "log-level", "info", "log level (debug, info, warning, error)")
@@ -1413,6 +1440,11 @@ Example:
 			fmt.Fprintf(os.Stderr, "invalid -keepalive: %v\n", err)
 			os.Exit(1)
 		}
+		responseDelay, err := time.ParseDuration(responseDelayStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid -response-delay: %v\n", err)
+			os.Exit(1)
+		}
 		if keepAlive >= idleTimeout {
 			fmt.Fprintf(os.Stderr, "-keepalive (%s) must be less than -idle-timeout (%s)\n", keepAlive, idleTimeout)
 			os.Exit(1)
@@ -1435,12 +1467,28 @@ Example:
 			fmt.Fprintf(os.Stderr, "-kcp-window-size (%d) must be <= -queue-size (%d)\n", kcpWindowSize, queueSize)
 			os.Exit(1)
 		}
+		if responseQueueSize < 0 {
+			fmt.Fprintf(os.Stderr, "-response-queue-size (%d) must be >= 0\n", responseQueueSize)
+			os.Exit(1)
+		}
+		if responseWorkers <= 0 {
+			fmt.Fprintf(os.Stderr, "-response-workers (%d) must be greater than 0\n", responseWorkers)
+			os.Exit(1)
+		}
+		if responseDelay <= 0 {
+			fmt.Fprintf(os.Stderr, "-response-delay (%s) must be greater than 0\n", responseDelay)
+			os.Exit(1)
+		}
 		queueOverflowMode, err := turbotunnel.ParseQueueOverflowMode(queueOverflowStr)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "invalid -queue-overflow: %v\n", err)
 			os.Exit(1)
 		}
-		log.Infof("transport config: queue-size=%d kcp-window-size=%d queue-overflow=%s", queueSize, kcpWindowSize, queueOverflowMode)
+		effectiveResponseQueueSize := responseQueueSize
+		if effectiveResponseQueueSize == 0 {
+			effectiveResponseQueueSize = queueSize
+		}
+		log.Infof("transport config: queue-size=%d kcp-window-size=%d queue-overflow=%s response-queue-size=%d response-workers=%d response-delay=%s", queueSize, kcpWindowSize, queueOverflowMode, effectiveResponseQueueSize, responseWorkers, responseDelay)
 
 		var wireConfig turbotunnel.WireConfig
 		if compatDnstt {
@@ -1486,7 +1534,7 @@ Example:
 			}
 		}
 
-		err = run(privkey, domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive, queueSize, kcpWindowSize, queueOverflowMode, wireConfig)
+		err = run(privkey, domain, upstream, dnsConn, fallbackAddr, idleTimeout, keepAlive, queueSize, kcpWindowSize, queueOverflowMode, responseQueueSize, responseWorkers, responseDelay, wireConfig)
 		if err != nil {
 			log.Fatalf("%v", err)
 		}
