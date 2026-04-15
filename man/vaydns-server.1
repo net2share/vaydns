@@ -149,6 +149,24 @@ Default:
 with
 .Fl dnstt-compat ) .
 
+.It Fl response-delay Ar DURATION
+Maximum time to hold a DNS response open while waiting for downstream
+data before sending an empty response.
+Default:
+.Cm 200ms .
+
+.It Fl response-queue-size Ar N
+Pending DNS response queue size.
+0 means
+.Fl queue-size .
+Default:
+.Cm 0 .
+
+.It Fl response-workers Ar N
+Number of DNS response sender workers.
+Default:
+.Cm 2 .
+
 .It Fl fallback Ar ADDR
 UDP endpoint to forward non-DNS packets to.
 If an incoming packet is not a valid DNS message,
@@ -176,10 +194,30 @@ Ignored when
 .Fl dnstt-compat
 is set.
 
+.It Fl queue-size Ar N
+Packet queue size for the DNS tunnel transport.
+Default:
+.Cm 512 .
+
+.It Fl kcp-window-size Ar N
+KCP send and receive window size in packets.
+0 means half of
+.Fl queue-size .
+Default:
+.Cm 0 .
+
+.It Fl queue-overflow Ar MODE
+Queue overflow behavior:
+.Cm drop
+or
+.Cm block .
+Default:
+.Cm drop .
+
 .It Fl log-level Ar LEVEL
 Log level: debug, info, warning, error.
 Default:
-.Cm warning .
+.Cm info .
 
 .El
 

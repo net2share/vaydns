@@ -95,6 +95,11 @@ t.SessionCheckInterval = 500 * time.Millisecond
 t.ReconnectMinDelay = 1 * time.Second
 t.ReconnectMaxDelay = 30 * time.Second
 t.HandshakeTimeout = 15 * time.Second
+t.PollDelay = 500 * time.Millisecond
+t.ActivePollDelay = 200 * time.Millisecond
+t.PollMaxDelay = 2 * time.Second
+t.UDPTransportStaleTimeout = 3 * time.Second
+t.OpenStreamFailureLimit = 3
 
 // Transport queue options
 t.PacketQueueSize = 512                                // queue capacity

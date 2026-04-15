@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"net"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +30,7 @@ type UDPPacketConn struct {
 	responseTimeout time.Duration
 	ignoreErrors    bool
 	forgedStats     *ForgedStats
+	lastSuccess     atomic.Int64
 	*turbotunnel.QueuePacketConn
 }
 
@@ -46,10 +48,23 @@ func NewUDPPacketConn(remoteAddr net.Addr, dialerControl func(network, address s
 		forgedStats:     stats,
 		QueuePacketConn: turbotunnel.NewQueuePacketConn(remoteAddr, 0, queueSize, overflowMode),
 	}
+	pconn.markSuccess()
 	for i := 0; i < numWorkers; i++ {
 		go pconn.sendLoop()
 	}
 	return pconn, stats, nil
+}
+
+func (c *UDPPacketConn) markSuccess() {
+	c.lastSuccess.Store(time.Now().UnixNano())
+}
+
+func (c *UDPPacketConn) lastSuccessTime() time.Time {
+	ns := c.lastSuccess.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
 }
 
 // sendLoop is the per-worker loop. It dequeues one packet at a time from the
@@ -141,6 +156,7 @@ func (c *UDPPacketConn) sendRecv(p []byte) error {
 		}
 
 		// Queue the raw wire-format response for the upper layer (dns.go recvLoop).
+		c.markSuccess()
 		c.QueueIncoming(buf[:n], c.remoteAddr)
 		return nil
 	}

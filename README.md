@@ -139,7 +139,12 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-queue-size N`      | Packet queue size for transport and DNS layers                    | `512`      |
 | `-kcp-window-size N` | KCP send/receive window size in packets (0 = queue-size/2)        | `0`        |
 | `-queue-overflow MODE` | Queue overflow behavior: `drop` (silent discard) or `block` (backpressure) | `drop`     |
+| `-response-queue-size N` | Pending DNS response queue size (0 = `queue-size`)            | `0`        |
+| `-response-workers N` | Number of DNS response sender workers                            | `2`        |
+| `-response-delay D`  | Max time to hold a DNS response open while waiting for downstream data | `200ms` |
 | `-log-level LEVEL`   | Log level: debug, info, warning, error                            | `info`     |
+
+> **Note:** The server response queue is drop-based. When it fills, pending DNS responses are dropped and counted in the debug stats log as `response_dropped`.
 
 ### Client flags
 
@@ -168,8 +173,11 @@ sudo ip6tables -t nat -I PREROUTING -i eth0 -p udp --dport 53 -j REDIRECT --to-p
 | `-keepalive D`              | Keepalive ping interval (must match server, must be < idle-timeout)                         | `2s`   |
 | `-max-streams N`            | Max concurrent streams per session (0 = unlimited)                                          | `0`   |
 | `-open-stream-timeout D`    | Timeout for opening an smux stream                                                          | `10s`   |
+| `-open-stream-failure-limit N` | Retire an idle session after this many consecutive stream-open failures                  | `3`   |
 | `-reconnect-min D`          | Initial backoff delay for session reconnect                                                  | `1s`    |
 | `-reconnect-max D`          | Max backoff delay (must be >= reconnect-min)                                                 | `30s`   |
+| `-session-check-interval D` | How often the managed client checks session and transport health                             | `500ms` |
+| `-udp-transport-stale-timeout D` | Retire the current session if per-query UDP sees no valid response for this long while streams need transport | `3s` |
 
 > **Note:** `idle-timeout` and `keepalive` must be set to the same values on both client and server — mismatched values will cause one side to close the session before the other detects it. Keep `keepalive` well below `idle-timeout` (the default 5x ratio allows ~5 ping attempts before timeout).
 >
@@ -185,6 +193,9 @@ These flags only apply when using `-udp`. By default, each query is sent from a 
 | `-udp-timeout D`     | Per-query response timeout — the total time a worker waits for a valid (NOERROR) response. Forged responses are discarded but the deadline is not extended — if no valid response arrives within this window, the query is abandoned. | `500ms` |
 | `-udp-shared-socket` | Use a single shared UDP socket instead of per-query sockets. By default, each query is sent from a new socket with a random ephemeral source port, making the tunnel harder to fingerprint or block by port. With this flag, all queries share one socket and source port for the lifetime of the client — blocking that port kills the tunnel. | `false` |
 | `-udp-accept-errors` | In per-query mode, accept the first DNS response regardless of RCODE instead of waiting for a NOERROR response. This disables forged response filtering — the worker stops waiting after the first forged response, so the real response is likely lost. Only useful for debugging; not recommended in production. Ignored when `-udp-shared-socket` is set. | `false` |
+| `-poll-delay D`      | Base delay before sending an empty DNS poll when idle                                                                                                      | `500ms` |
+| `-active-poll-delay D` | Poll delay cap while streams are active or being opened                                                                                                  | `200ms` |
+| `-poll-max-delay D`  | Max idle backoff between empty DNS polls                                                                                                                   | `2s`    |
 
 #### Queue and KCP tuning
 

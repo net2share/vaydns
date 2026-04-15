@@ -50,6 +50,11 @@ func main() {
 	var reconnectMaxStr string
 	var sessionCheckIntervalStr string
 	var openStreamTimeoutStr string
+	var pollDelayStr string
+	var activePollDelayStr string
+	var pollMaxDelayStr string
+	var udpTransportStaleTimeoutStr string
+	var openStreamFailureLimit int
 	var maxStreams int
 	var udpWorkers int
 	var udpSharedSocket bool
@@ -129,6 +134,11 @@ Known TLS fingerprints for -utls are:
 	flag.StringVar(&reconnectMaxStr, "reconnect-max", client.DefaultReconnectMaxDelay.String(), "maximum delay before retrying session creation (e.g. 5s, 30s)")
 	flag.StringVar(&sessionCheckIntervalStr, "session-check-interval", client.DefaultSessionCheckInterval.String(), "interval for checking whether the current session is still alive (e.g. 100ms, 500ms)")
 	flag.StringVar(&openStreamTimeoutStr, "open-stream-timeout", client.DefaultOpenStreamTimeout.String(), "timeout for opening an smux stream (e.g. 500ms, 3s)")
+	flag.StringVar(&pollDelayStr, "poll-delay", client.DefaultPollDelay.String(), "base delay before sending an empty DNS poll when idle (e.g. 500ms, 1s)")
+	flag.StringVar(&activePollDelayStr, "active-poll-delay", client.DefaultActivePollDelay.String(), "poll delay cap while streams are active or being opened (e.g. 100ms, 200ms)")
+	flag.StringVar(&pollMaxDelayStr, "poll-max-delay", client.DefaultPollMaxDelay.String(), "maximum idle backoff between empty DNS polls (e.g. 2s, 5s)")
+	flag.StringVar(&udpTransportStaleTimeoutStr, "udp-transport-stale-timeout", client.DefaultUDPTransportStaleTimeout.String(), "retire the current session if per-query UDP sees no valid response for this long while streams need transport")
+	flag.IntVar(&openStreamFailureLimit, "open-stream-failure-limit", client.DefaultOpenStreamFailureLimit, "retire an idle session after this many consecutive stream-open failures")
 	flag.IntVar(&maxStreams, "max-streams", client.DefaultMaxStreams, "max concurrent streams per session (0 = unlimited)")
 	flag.IntVar(&udpWorkers, "udp-workers", client.DefaultUDPWorkers, "number of concurrent UDP worker goroutines")
 	flag.BoolVar(&udpSharedSocket, "udp-shared-socket", false, "use a single shared UDP socket instead of per-query sockets")
@@ -270,6 +280,26 @@ Known TLS fingerprints for -utls are:
 		fmt.Fprintf(os.Stderr, "invalid -open-stream-timeout: %v\n", err)
 		os.Exit(1)
 	}
+	pollDelay, err := time.ParseDuration(pollDelayStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -poll-delay: %v\n", err)
+		os.Exit(1)
+	}
+	activePollDelay, err := time.ParseDuration(activePollDelayStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -active-poll-delay: %v\n", err)
+		os.Exit(1)
+	}
+	pollMaxDelay, err := time.ParseDuration(pollMaxDelayStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -poll-max-delay: %v\n", err)
+		os.Exit(1)
+	}
+	udpTransportStaleTimeout, err := time.ParseDuration(udpTransportStaleTimeoutStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid -udp-transport-stale-timeout: %v\n", err)
+		os.Exit(1)
+	}
 	udpTimeout, err := time.ParseDuration(udpTimeoutStr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "invalid -udp-timeout: %v\n", err)
@@ -295,6 +325,26 @@ Known TLS fingerprints for -utls are:
 	}
 	if openStreamTimeout <= 0 {
 		fmt.Fprintf(os.Stderr, "-open-stream-timeout (%s) must be greater than 0\n", openStreamTimeout)
+		os.Exit(1)
+	}
+	if pollDelay <= 0 {
+		fmt.Fprintf(os.Stderr, "-poll-delay (%s) must be greater than 0\n", pollDelay)
+		os.Exit(1)
+	}
+	if activePollDelay <= 0 {
+		fmt.Fprintf(os.Stderr, "-active-poll-delay (%s) must be greater than 0\n", activePollDelay)
+		os.Exit(1)
+	}
+	if pollMaxDelay < pollDelay {
+		fmt.Fprintf(os.Stderr, "-poll-max-delay (%s) must be greater than or equal to -poll-delay (%s)\n", pollMaxDelay, pollDelay)
+		os.Exit(1)
+	}
+	if udpTransportStaleTimeout <= 0 {
+		fmt.Fprintf(os.Stderr, "-udp-transport-stale-timeout (%s) must be greater than 0\n", udpTransportStaleTimeout)
+		os.Exit(1)
+	}
+	if openStreamFailureLimit <= 0 {
+		fmt.Fprintf(os.Stderr, "-open-stream-failure-limit (%d) must be greater than 0\n", openStreamFailureLimit)
 		os.Exit(1)
 	}
 	if queueSize <= 0 {
@@ -365,7 +415,6 @@ Known TLS fingerprints for -utls are:
 			log.Warnf("-udp-accept-errors disables forged response filtering; per-query workers will accept the first response regardless of RCODE, which may cause connection failures under DNS injection")
 		}
 	}
-
 	// Build tunnel server config.
 	ts, err := client.NewTunnelServer(domainArg, pubkeyHex)
 	if err != nil {
@@ -392,10 +441,25 @@ Known TLS fingerprints for -utls are:
 	tunnel.ReconnectMinDelay = reconnectMinDelay
 	tunnel.ReconnectMaxDelay = reconnectMaxDelay
 	tunnel.SessionCheckInterval = sessionCheckInterval
+	tunnel.PollDelay = pollDelay
+	tunnel.ActivePollDelay = activePollDelay
+	tunnel.PollMaxDelay = pollMaxDelay
+	tunnel.UDPTransportStaleTimeout = udpTransportStaleTimeout
+	tunnel.OpenStreamFailureLimit = openStreamFailureLimit
 	tunnel.PacketQueueSize = queueSize
 	tunnel.KCPWindowSize = kcpWindowSize
 	tunnel.QueueOverflowMode = queueOverflowMode
-	log.Infof("transport config: queue-size=%d kcp-window-size=%d queue-overflow=%s", queueSize, kcpWindowSize, queueOverflowMode)
+	log.Infof(
+		"transport config: queue-size=%d kcp-window-size=%d queue-overflow=%s poll-delay=%s active-poll-delay=%s poll-max-delay=%s udp-transport-stale-timeout=%s open-stream-failure-limit=%d",
+		queueSize,
+		kcpWindowSize,
+		queueOverflowMode,
+		pollDelay,
+		activePollDelay,
+		pollMaxDelay,
+		udpTransportStaleTimeout,
+		openStreamFailureLimit,
+	)
 
 	if compatDnstt {
 		log.Infof("wire config: clientid-size=8 compat=true")
