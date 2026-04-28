@@ -805,6 +805,102 @@ func TestEncodeDecodeRDataAAAA(t *testing.T) {
 	}
 }
 
+func TestEncodeDecodeRDataNULL(t *testing.T) {
+	for _, p := range [][]byte{
+		{},
+		{0x00},
+		{0x01, 0x02, 0x03},
+		bytes.Repeat([]byte{0xab}, 100),
+		bytes.Repeat([]byte{0xff}, 1000),
+	} {
+		rdata := EncodeRDataNULL(p)
+		decoded, err := DecodeRDataNULL(rdata)
+		if err != nil {
+			t.Errorf("DecodeRDataNULL(%x): %v", rdata, err)
+			continue
+		}
+		if !bytes.Equal(decoded, p) {
+			t.Errorf("NULL round-trip failed for len=%d: got len=%d", len(p), len(decoded))
+		}
+	}
+}
+
+func TestRDataNULLIdentity(t *testing.T) {
+	// NULL encode/decode should be identity — no framing overhead.
+	p := []byte{0x01, 0x02, 0x03}
+	if !bytes.Equal(EncodeRDataNULL(p), p) {
+		t.Error("EncodeRDataNULL should return input unchanged")
+	}
+	decoded, _ := DecodeRDataNULL(p)
+	if !bytes.Equal(decoded, p) {
+		t.Error("DecodeRDataNULL should return input unchanged")
+	}
+}
+
+func TestDecodeRDataCAA(t *testing.T) {
+	for _, test := range []struct {
+		desc    string
+		p       []byte
+		decoded []byte
+		err     error
+	}{
+		{"empty input", []byte{}, nil, io.ErrUnexpectedEOF},
+		{"single byte", []byte{0x00}, nil, io.ErrUnexpectedEOF},
+		{"tag length exceeds data", []byte{0x00, 0x05, 'a'}, nil, io.ErrUnexpectedEOF},
+		{"tag only, no value", []byte{0x00, 0x05, 'i', 's', 's', 'u', 'e'}, []byte{}, nil},
+		{"tag + value", []byte{0x00, 0x05, 'i', 's', 's', 'u', 'e', 0xaa, 0xbb}, []byte{0xaa, 0xbb}, nil},
+		{"zero-length tag", []byte{0x00, 0x00, 0x01, 0x02}, []byte{0x01, 0x02}, nil},
+		{"flags byte ignored", []byte{0x80, 0x05, 'i', 's', 's', 'u', 'e', 0xff}, []byte{0xff}, nil},
+	} {
+		decoded, err := DecodeRDataCAA(test.p)
+		if err != test.err {
+			t.Errorf("%s: got err %v, want %v", test.desc, err, test.err)
+			continue
+		}
+		if err == nil && !bytes.Equal(decoded, test.decoded) {
+			t.Errorf("%s: got %x, want %x", test.desc, decoded, test.decoded)
+		}
+	}
+}
+
+func TestEncodeRDataCAA(t *testing.T) {
+	p := []byte{0x01, 0x02, 0x03}
+	rdata := EncodeRDataCAA(p)
+	// Expected: flags(0) + tagLen(5) + "issue" + payload
+	expected := append([]byte{0x00, 0x05, 'i', 's', 's', 'u', 'e'}, p...)
+	if !bytes.Equal(rdata, expected) {
+		t.Errorf("EncodeRDataCAA(%x) = %x, want %x", p, rdata, expected)
+	}
+}
+
+func TestEncodeRDataCAAEmpty(t *testing.T) {
+	rdata := EncodeRDataCAA([]byte{})
+	// Even with empty payload, should have flags + tagLen + tag.
+	if len(rdata) != 7 {
+		t.Errorf("EncodeRDataCAA(empty) length = %d, want 7", len(rdata))
+	}
+}
+
+func TestRDataCAARoundTrip(t *testing.T) {
+	for _, p := range [][]byte{
+		{},
+		{0x00},
+		{0x01, 0x02, 0x03},
+		bytes.Repeat([]byte{0xab}, 100),
+		bytes.Repeat([]byte{0xff}, 1000),
+	} {
+		rdata := EncodeRDataCAA(p)
+		decoded, err := DecodeRDataCAA(rdata)
+		if err != nil {
+			t.Errorf("CAA round-trip decode error for len=%d: %v", len(p), err)
+			continue
+		}
+		if !bytes.Equal(decoded, p) {
+			t.Errorf("CAA round-trip failed for len=%d: got len=%d", len(p), len(decoded))
+		}
+	}
+}
+
 func TestReadRRMXCompression(t *testing.T) {
 	// DNS message with MX answer using compression pointer in exchange name.
 	msg := []byte{

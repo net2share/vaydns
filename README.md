@@ -408,7 +408,7 @@ VayDNS supports multiple DNS record types for downstream data encoding. Both cli
 | Type | Description | Capacity |
 | ---- | ----------- | -------- |
 | `txt` | TXT record (default). Highest capacity, compatible with dnstt. | Bounded by UDP payload (~1200 bytes) |
-| `null` | NULL record. Raw binary payload in a single RR. | Bounded by UDP payload |
+| `null` | NULL record. Raw binary payload in a single RR. Some recursive resolvers may filter or refuse to relay NULL records. | Bounded by UDP payload |
 | `cname` | CNAME record. Data encoded as a DNS name under the tunnel domain. | Bounded by 255-byte DNS name limit |
 | `ns` | NS record. Same encoding as CNAME. | Same as CNAME |
 | `mx` | MX record. 2-byte preference header + name encoding. | Same as CNAME |

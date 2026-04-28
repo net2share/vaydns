@@ -726,6 +726,7 @@ func DecodeRDataCAA(p []byte) ([]byte, error) {
 func EncodeRDataCAA(p []byte) []byte {
 	const tag = "issue"
 	rdata := make([]byte, 2+len(tag)+len(p))
+	// rdata[0] = 0 (flags; bit 7 is the "critical" flag per RFC 8659 §4.1)
 	rdata[1] = byte(len(tag))
 	copy(rdata[2:], tag)
 	copy(rdata[2+len(tag):], p)

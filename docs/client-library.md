@@ -84,7 +84,7 @@ ts.ClientIDSize = 1      // smaller ClientID
 ts.MaxQnameLen = 101     // QNAME length constraint
 ts.MaxNumLabels = 2      // label count constraint
 ts.RPS = 200             // rate limit queries/second
-ts.RecordType = "cname"  // DNS record type for downstream data (default: "txt")
+ts.RecordType = "cname"  // DNS record type for downstream data: txt, null, cname, a, aaaa, mx, ns, srv, caa (default: "txt")
 
 // Session options
 t.IdleTimeout = 60 * time.Second
