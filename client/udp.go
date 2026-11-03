@@ -133,8 +133,14 @@ func (c *UDPPacketConn) sendLoop() {
 // on success, or an error if the query could not be sent or no valid
 // response arrived within the timeout.
 // exchange sends p on the worker's kept socket and reads until the answer
-// with p's DNS ID arrives or the timeout expires; answers of earlier queries
-// that came late are dropped. broken reports a socket that must be replaced.
+// with p's DNS ID arrives or the timeout expires. Every answer that carries
+// tunnel data is queued for the tunnel, whatever its ID: a late answer to an
+// earlier query, or a second answer to one (a resolver pool that sends a
+// query twice gets two packets from the server), carries data the tunnel
+// would otherwise wait a retransmission for. An error answer only ends the
+// wait: the pool behind a local resolver already retried the query, and the
+// worker is better off with the next one than waiting the timeout out.
+// broken reports a socket that must be replaced.
 func (c *UDPPacketConn) exchange(conn net.PacketConn, p []byte) (err error, broken bool) {
 	if len(p) < 2 {
 		return nil, false
@@ -152,17 +158,21 @@ func (c *UDPPacketConn) exchange(conn net.PacketConn, p []byte) (err error, brok
 			var ne net.Error
 			return err, !(errors.As(err, &ne) && ne.Timeout())
 		}
-		if n < 12 || uint16(buf[0])<<8|uint16(buf[1]) != id {
-			continue // a late answer to an earlier query, or not DNS
+		if n < 12 {
+			continue // not DNS
 		}
+		mine := uint16(buf[0])<<8|uint16(buf[1]) == id
 		if rcode := uint16(buf[3]) & 0x000f; rcode != dns.RcodeNoError {
-			if c.ignoreErrors {
-				c.forgedStats.Record(rcode)
-				continue
+			c.forgedStats.Record(rcode)
+			if mine {
+				return nil, false
 			}
+			continue
 		}
 		c.QueueIncoming(buf[:n], c.remoteAddr)
-		return nil, false
+		if mine {
+			return nil, false
+		}
 	}
 }
 

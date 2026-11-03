@@ -9,9 +9,10 @@ import (
 	"github.com/net2share/vaydns/turbotunnel"
 )
 
-// With ReuseSockets a worker keeps one socket: each query gets its own answer
-// (matched by DNS ID), a late answer to an earlier query is skipped, and the
-// worker's source port stays the same.
+// With ReuseSockets a worker keeps one socket: the worker moves on when its
+// own query's answer (by DNS ID) arrives, every answer that arrives is
+// queued for the tunnel, a late or second one too, and the worker's source
+// port stays the same.
 func TestUDPPacketConnReuseSockets(t *testing.T) {
 	server, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
@@ -47,6 +48,17 @@ func TestUDPPacketConnReuseSockets(t *testing.T) {
 	}
 	conn.ReuseSockets.Store(true)
 	defer conn.Close()
+	got := map[int]int{}
+	read := func() {
+		buf := make([]byte, 512)
+		n, _, err := conn.ReadFrom(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n >= 12 {
+			got[int(buf[0])<<8|int(buf[1])]++
+		}
+	}
 	for id := 1; id <= 5; id++ {
 		q := make([]byte, 12)
 		q[0], q[1] = byte(id>>8), byte(id)
@@ -54,14 +66,17 @@ func TestUDPPacketConnReuseSockets(t *testing.T) {
 		if _, err := conn.WriteTo(q, server.LocalAddr()); err != nil {
 			t.Fatal(err)
 		}
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		buf := make([]byte, 512)
-		n, _, err := conn.ReadFrom(buf)
-		if err != nil {
-			t.Fatalf("query %d: %v", id, err)
+		// the server answers each query twice from the second on: the
+		// previous query's answer again, late, and its own; the worker
+		// queues both
+		read()
+		if id > 1 {
+			read()
 		}
-		if got := int(buf[0])<<8 | int(buf[1]); n < 12 || got != id {
-			t.Fatalf("query %d got the answer of %d", id, got)
+	}
+	for id := 1; id <= 5; id++ {
+		if (id < 5 && got[id] != 2) || (id == 5 && got[id] != 1) {
+			t.Fatalf("answers queued per query: %v (every answer, late ones too, is queued)", got)
 		}
 	}
 	mu.Lock()
