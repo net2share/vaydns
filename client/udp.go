@@ -2,7 +2,9 @@ package client
 
 import (
 	"context"
+	"errors"
 	"net"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -29,6 +31,12 @@ type UDPPacketConn struct {
 	responseTimeout time.Duration
 	ignoreErrors    bool
 	forgedStats     *ForgedStats
+	// ReuseSockets makes each worker keep one socket for all its queries
+	// instead of a fresh one per query: for a local resolver such as a
+	// resolver pool on 127.0.0.1, where random source ports buy nothing and
+	// a socket per query costs most of the CPU. Set it before the first
+	// packet is written.
+	ReuseSockets atomic.Bool
 	*turbotunnel.QueuePacketConn
 }
 
@@ -65,6 +73,12 @@ func (c *UDPPacketConn) sendLoop() {
 	backoff := initBackoff
 	outgoing := c.OutgoingQueue(c.remoteAddr)
 	closed := c.Closed()
+	var kept net.PacketConn // this worker's socket, with ReuseSockets
+	defer func() {
+		if kept != nil {
+			kept.Close()
+		}
+	}()
 
 	for {
 		var p []byte
@@ -73,7 +87,29 @@ func (c *UDPPacketConn) sendLoop() {
 			return
 		case p = <-outgoing:
 		}
-		if err := c.sendRecv(p); err != nil {
+		var err error
+		if c.ReuseSockets.Load() {
+			if kept == nil {
+				lc := net.ListenConfig{Control: c.dialerControl}
+				kept, err = lc.ListenPacket(context.Background(), "udp", "")
+			}
+			if err == nil {
+				var broken bool
+				err, broken = c.exchange(kept, p)
+				if broken {
+					kept.Close()
+					kept = nil
+				} else {
+					// a timeout on a kept socket cannot spin: no backoff,
+					// which would idle the worker while a rate-limited
+					// resolver drops a share of the queries
+					err = nil
+				}
+			}
+		} else {
+			err = c.sendRecv(p)
+		}
+		if err != nil {
 			timer := time.NewTimer(backoff)
 			select {
 			case <-closed:
@@ -96,6 +132,50 @@ func (c *UDPPacketConn) sendLoop() {
 // responses until a valid one arrives or the timeout expires. Returns nil
 // on success, or an error if the query could not be sent or no valid
 // response arrived within the timeout.
+// exchange sends p on the worker's kept socket and reads until the answer
+// with p's DNS ID arrives or the timeout expires. Every answer that carries
+// tunnel data is queued for the tunnel, whatever its ID: a late answer to an
+// earlier query, or a second answer to one (a resolver pool that sends a
+// query twice gets two packets from the server), carries data the tunnel
+// would otherwise wait a retransmission for. An error answer only ends the
+// wait: the pool behind a local resolver already retried the query, and the
+// worker is better off with the next one than waiting the timeout out.
+// broken reports a socket that must be replaced.
+func (c *UDPPacketConn) exchange(conn net.PacketConn, p []byte) (err error, broken bool) {
+	if len(p) < 2 {
+		return nil, false
+	}
+	if _, err := conn.WriteTo(p, c.remoteAddr); err != nil {
+		log.Warnf("udp worker: WriteTo: %v", err)
+		return err, true
+	}
+	conn.SetReadDeadline(time.Now().Add(c.responseTimeout))
+	id := uint16(p[0])<<8 | uint16(p[1])
+	var buf [4096]byte
+	for {
+		n, _, err := conn.ReadFrom(buf[:])
+		if err != nil {
+			var ne net.Error
+			return err, !(errors.As(err, &ne) && ne.Timeout())
+		}
+		if n < 12 {
+			continue // not DNS
+		}
+		mine := uint16(buf[0])<<8|uint16(buf[1]) == id
+		if rcode := uint16(buf[3]) & 0x000f; rcode != dns.RcodeNoError {
+			c.forgedStats.Record(rcode)
+			if mine {
+				return nil, false
+			}
+			continue
+		}
+		c.QueueIncoming(buf[:n], c.remoteAddr)
+		if mine {
+			return nil, false
+		}
+	}
+}
+
 func (c *UDPPacketConn) sendRecv(p []byte) error {
 	lc := net.ListenConfig{
 		Control: c.dialerControl,

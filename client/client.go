@@ -88,6 +88,7 @@ type Resolver struct {
 	// UDP transport settings (only apply to ResolverTypeUDP).
 	UDPWorkers      int           // concurrent UDP workers (0 = DefaultUDPWorkers)
 	UDPSharedSocket bool          // use single shared socket instead of per-query
+	UDPReuseSockets bool          // each worker keeps one socket instead of one per query (for a local resolver)
 	UDPTimeout      time.Duration // per-query response timeout (0 = DefaultUDPResponseTimeout)
 	UDPAcceptErrors bool          // pass through non-NOERROR responses (default: filter)
 }
@@ -321,6 +322,7 @@ func (t *Tunnel) InitiateResolverConnection() error {
 			if err != nil {
 				return err
 			}
+			conn.ReuseSockets.Store(r.UDPReuseSockets)
 			t.forgedStats = forgedStats
 			t.resolverConn = conn
 		}
